@@ -1,0 +1,17 @@
+[package]
+name    = "methods"
+version = "0.1.0"
+edition = "2021"
+
+# Tell risc0-build where the guest crate lives (path relative to this manifest).
+[package.metadata.risc0]
+methods = ["guest"]
+
+# Build dependencies: custom build script cross-compiles the guest ELF using
+# nightly + build-std, fuses it with the pre-built V1COMPAT kernel, and
+# computes the image ID — all without requiring rzup or a RISC Zero toolchain.
+[build-dependencies]
+risc0-binfmt      = { version = "2.0", features = ["std"], default-features = false }
+risc0-zkos-v1compat = "2.1"
+
+# No runtime dependencies — lib.rs only does include!(concat!(env!("OUT_DIR"), "/methods.rs"))

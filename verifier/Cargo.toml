@@ -1,0 +1,16 @@
+[workspace]
+members  = ["core", "host", "methods"]
+resolver = "2"
+
+# ── Shared dependency versions (single point of truth) ───────────────────────
+[workspace.dependencies]
+risc0-zkvm  = { version = "2.0", features = ["client", "prove"] }
+risc0-build = "2.0"
+
+serde    = { version = "1.0", features = ["derive"] }
+bincode  = "1.3"
+anyhow   = "1.0"
+sha2     = "0.10"
+
+# core types shared between host and guest
+verifier-core = { path = "core" }

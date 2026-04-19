@@ -1,0 +1,16 @@
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\deps\typetag-4c2e2daa5d983284.d: C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\lib.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\adjacently.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\content.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\de.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\externally.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\internally.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\is_serialize_str.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\private.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\ser.rs C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\typetag-64bcc3e6c59635c4\out/private.rs
+
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\deps\libtypetag-4c2e2daa5d983284.rmeta: C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\lib.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\adjacently.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\content.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\de.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\externally.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\internally.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\is_serialize_str.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\private.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\ser.rs C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\typetag-64bcc3e6c59635c4\out/private.rs
+
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\lib.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\adjacently.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\content.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\de.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\externally.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\internally.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\is_serialize_str.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\private.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\typetag-0.2.21\src\ser.rs:
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\typetag-64bcc3e6c59635c4\out/private.rs:
+
+# env-dep:OUT_DIR=C:\\Users\\alshy\\OneDrive\\Desktop\\OmniWatch\\verifier\\target\\debug\\build\\typetag-64bcc3e6c59635c4\\out

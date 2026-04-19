@@ -1,0 +1,14 @@
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\deps\serde-62d36242a69db63b.d: C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\serde-e8e116b4b06aa0ff\out/private.rs
+
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\deps\libserde-62d36242a69db63b.rlib: C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\serde-e8e116b4b06aa0ff\out/private.rs
+
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\deps\libserde-62d36242a69db63b.rmeta: C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\serde-e8e116b4b06aa0ff\out/private.rs
+
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs:
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\serde-e8e116b4b06aa0ff\out/private.rs:
+
+# env-dep:OUT_DIR=C:\\Users\\alshy\\OneDrive\\Desktop\\OmniWatch\\verifier\\target\\debug\\build\\serde-e8e116b4b06aa0ff\\out

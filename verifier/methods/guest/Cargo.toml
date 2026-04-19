@@ -1,0 +1,23 @@
+[package]
+name    = "verifier-guest"
+version = "0.1.0"
+edition = "2021"
+
+# Empty [workspace] tells Cargo this is its own workspace root, not a member
+# of the parent verifier workspace.  risc0-build (or our custom build.rs)
+# cross-compiles this crate independently for riscv32im-risc0-zkvm-elf.
+[workspace]
+
+[[bin]]
+name = "verifier-guest"
+path = "src/main.rs"
+
+[dependencies]
+# risc0-zkvm v2.x: the "std" feature enables the zkVM std shim for the guest.
+# default-features = false disables all host-only features (client, prove, etc).
+risc0-zkvm    = { version = "2.0", default-features = false, features = ["std"] }
+verifier-core = { path = "../../core" }
+# sha2 pure-Rust (no hardware acceleration) — safe inside the zkVM.
+sha2          = { version = "0.10", default-features = false, features = ["force-soft"] }
+bincode       = "1.3"
+serde         = { version = "1.0", features = ["derive"] }

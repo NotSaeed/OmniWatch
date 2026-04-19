@@ -1,0 +1,100 @@
+[build.rs] rustup path: C:\Users\alshy\.cargo\bin\rustup.exe
+[build.rs] nightly toolchain root: Some("C:\\Users\\alshy\\.rustup\\toolchains\\nightly-x86_64-pc-windows-msvc")
+[build.rs] CARGO env: Ok("C:\\Users\\alshy\\.rustup\\toolchains\\stable-x86_64-pc-windows-msvc\\bin\\cargo.exe")
+[build.rs] RUSTUP_TOOLCHAIN env: Ok("stable-x86_64-pc-windows-msvc")
+   Compiling compiler_builtins v0.1.160 (C:\Users\alshy\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\compiler-builtins\compiler-builtins)
+   Compiling core v0.0.0 (C:\Users\alshy\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\core)
+   Compiling libc v0.2.185
+   Compiling std v0.0.0 (C:\Users\alshy\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\std)
+   Compiling generic-array v0.14.7
+   Compiling zerocopy v0.8.48
+   Compiling num-traits v0.2.19
+   Compiling serde_core v1.0.228
+   Compiling serde v1.0.228
+   Compiling libm v0.2.16
+   Compiling getrandom v0.3.4
+   Compiling anyhow v1.0.102
+   Compiling thiserror v2.0.18
+   Compiling ahash v0.8.12
+   Compiling borsh v1.6.1
+   Compiling risc0-zkp v2.0.3
+   Compiling risc0-circuit-recursion v3.0.1
+   Compiling rustc-std-workspace-core v1.99.0 (C:\Users\alshy\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\rustc-std-workspace-core)
+   Compiling alloc v0.0.0 (C:\Users\alshy\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\alloc)
+   Compiling cfg-if v1.0.4
+   Compiling rustc-demangle v0.1.27
+   Compiling rustc-literal-escaper v0.0.7
+   Compiling unwind v0.0.0 (C:\Users\alshy\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\unwind)
+   Compiling rustc-std-workspace-alloc v1.99.0 (C:\Users\alshy\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\rustc-std-workspace-alloc)
+   Compiling panic_abort v0.0.0 (C:\Users\alshy\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\panic_abort)
+   Compiling panic_unwind v0.0.0 (C:\Users\alshy\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\panic_unwind)
+   Compiling std_detect v0.1.5 (C:\Users\alshy\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\std_detect)
+   Compiling hashbrown v0.17.0
+   Compiling proc_macro v0.0.0 (C:\Users\alshy\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\proc_macro)
+   Compiling typenum v1.20.0
+   Compiling rand_core v0.6.4
+   Compiling subtle v2.6.1
+   Compiling const-oid v0.9.6
+   Compiling once_cell v1.21.4
+   Compiling log v0.4.29
+   Compiling pin-project-lite v0.2.17
+   Compiling zeroize v1.8.2
+   Compiling arrayvec v0.7.6
+   Compiling either v1.15.0
+   Compiling bytemuck v1.23.1
+   Compiling getrandom v0.2.17
+   Compiling num_enum v0.7.6
+   Compiling tracing-core v0.1.36
+   Compiling allocator-api2 v0.2.21
+   Compiling hex-literal v0.4.1
+   Compiling hex v0.4.3
+   Compiling itertools v0.13.0
+   Compiling risc0-core v2.0.0
+   Compiling cobs v0.3.0
+   Compiling spin v0.9.8
+   Compiling keccak v0.1.6
+   Compiling lazy_static v1.5.0
+   Compiling derive_more v2.1.1
+   Compiling hashbrown v0.15.5
+   Compiling tracing v0.1.44
+   Compiling tracing-subscriber v0.2.25
+   Compiling elf v0.7.4
+   Compiling byteorder v1.5.0
+   Compiling include_bytes_aligned v0.1.4
+   Compiling num-integer v0.1.46
+   Compiling merlin v3.0.0
+   Compiling no_std_strings v0.1.3
+   Compiling downcast-rs v1.2.1
+   Compiling rrs-lib v0.1.0
+   Compiling risc0-zkvm-platform v2.2.2
+   Compiling num-bigint v0.4.6
+   Compiling risc0-zkos-v1compat v2.2.2
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling blake2 v0.10.6
+   Compiling sha2 v0.10.9
+   Compiling semver v1.0.28
+   Compiling postcard v1.1.3
+   Compiling bincode v1.3.3
+   Compiling verifier-core v0.1.0 (C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\core)
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.3.1
+   Compiling risc0-binfmt v2.0.3
+   Compiling rand v0.8.6
+   Compiling risc0-circuit-rv32im v3.0.1
+   Compiling risc0-circuit-keccak v3.0.1
+   Compiling ark-std v0.5.0
+   Compiling ark-serialize v0.5.0
+   Compiling ark-ff v0.5.0
+   Compiling ark-poly v0.5.0
+   Compiling ark-relations v0.5.1
+   Compiling ark-snark v0.5.1
+   Compiling ark-ec v0.5.0
+   Compiling ark-crypto-primitives v0.5.0
+   Compiling ark-bn254 v0.5.0
+   Compiling ark-groth16 v0.5.0
+   Compiling risc0-groth16 v2.0.3
+   Compiling risc0-zkvm v2.3.2
+   Compiling verifier-guest v0.1.0 (C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\methods\guest)
+    Finished `release` profile [optimized] target(s) in 38.05s

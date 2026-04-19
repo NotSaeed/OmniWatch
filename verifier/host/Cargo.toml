@@ -1,0 +1,17 @@
+[package]
+name    = "host"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "omniwatch-verifier"
+path = "src/main.rs"
+
+[dependencies]
+risc0-zkvm    = { workspace = true }
+verifier-core = { workspace = true }
+methods       = { path = "../methods" }
+anyhow        = { workspace = true }
+bincode       = { workspace = true }
+serde         = { workspace = true }
+rayon         = "1"

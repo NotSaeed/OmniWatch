@@ -1,0 +1,10 @@
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\methods-becd4dfb8e20cfa9\out\guest-target\riscv32im-risc0-zkvm-elf\release\deps\libc-e7253a657705aff7.d: C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\lib.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\macros.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\new\mod.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\new\common\mod.rs
+
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\methods-becd4dfb8e20cfa9\out\guest-target\riscv32im-risc0-zkvm-elf\release\deps\liblibc-e7253a657705aff7.rlib: C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\lib.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\macros.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\new\mod.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\new\common\mod.rs
+
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\methods-becd4dfb8e20cfa9\out\guest-target\riscv32im-risc0-zkvm-elf\release\deps\liblibc-e7253a657705aff7.rmeta: C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\lib.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\macros.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\new\mod.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\new\common\mod.rs
+
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\lib.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\macros.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\new\mod.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\libc-0.2.185\src\new\common\mod.rs:

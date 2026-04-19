@@ -1,0 +1,5 @@
+[target.riscv32im-risc0-zkvm-elf]
+rustflags = [
+    "-C", "passes=lower-atomic",
+    "--cfg", "getrandom_backend=\"custom\"",
+]
