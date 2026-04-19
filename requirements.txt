@@ -1,0 +1,34 @@
+# OmniWatch Backend Dependencies
+
+# Web framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+
+# MCP server
+fastmcp==2.3.4
+
+# Anthropic Claude API
+anthropic==0.40.0
+
+# Database
+sqlalchemy[asyncio]==2.0.36
+aiosqlite==0.20.0
+
+# Data validation
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# HTTP client (for threat intel APIs)
+httpx==0.28.1
+
+# Scheduling
+apscheduler==3.10.4
+
+# File upload support
+python-multipart==0.0.20
+
+# Folder monitoring (auto-ingest)
+watchdog==6.0.0
+
+# Environment
+python-dotenv==1.1.0

@@ -1,0 +1,199 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+/* ── Reset ─────────────────────────────────────────────────────────────────── */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ── Design Tokens ─────────────────────────────────────────────────────────── */
+:root {
+  /* Backgrounds — deep zinc/obsidian scale */
+  --splunk-bg:        #09090b;   /* zinc-950 */
+  --splunk-surface:   #111113;   /* near-black surface */
+  --splunk-card:      #18181b;   /* zinc-900 */
+  --splunk-border:    #27272a;   /* zinc-800 */
+  --splunk-border-hi: #3f3f46;   /* zinc-700 */
+
+  /* Text */
+  --splunk-text:      #e4e4e7;   /* zinc-200 */
+  --splunk-muted:     #71717a;   /* zinc-500 */
+
+  /* Accent palette */
+  --splunk-green:     #72c811;
+  --splunk-cyan:      #06b6d4;   /* cyan-500 */
+  --splunk-magenta:   #d946ef;   /* fuchsia-500 */
+  --splunk-red:       #ef4444;   /* red-500 */
+  --splunk-amber:     #f59e0b;   /* amber-500 */
+  --splunk-blue:      #3b82f6;   /* blue-500 */
+  --splunk-violet:    #8b5cf6;   /* violet-500 */
+
+  /* Sidebar */
+  --sidebar-bg:       #070709;
+  --sidebar-border:   #1c1c1f;
+}
+
+body {
+  background: var(--splunk-bg);
+  color: var(--splunk-text);
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root { min-height: 100vh; }
+
+/* ── Monospace ─────────────────────────────────────────────────────────────── */
+.font-mono, code, pre, kbd {
+  font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+}
+
+/* ── Scrollbars (dense, Splunk-style) ─────────────────────────────────────── */
+::-webkit-scrollbar        { width: 4px; height: 4px; }
+::-webkit-scrollbar-track  { background: var(--splunk-surface); }
+::-webkit-scrollbar-thumb  { background: var(--splunk-border-hi); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #4d5060; }
+
+/* ── Animations ────────────────────────────────────────────────────────────── */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes glow-pulse {
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 1; }
+}
+
+@keyframes critical-pulse {
+  0%, 100% { box-shadow: inset 3px 0 0 rgba(232, 77, 77, 0); }
+  50%       { box-shadow: inset 3px 0 0 rgba(232, 77, 77, 0.7); }
+}
+
+@keyframes node-appear {
+  from { opacity: 0; transform: scale(0.85) translateY(4px); }
+  to   { opacity: 1; transform: scale(1)    translateY(0);   }
+}
+
+@keyframes wire-draw {
+  from { stroke-dashoffset: 40; opacity: 0; }
+  to   { stroke-dashoffset: 0;  opacity: 1; }
+}
+
+@keyframes sim-pulse {
+  0%, 100% { opacity: 0.7; }
+  50%       { opacity: 1;   }
+}
+
+/* ── Utility classes ───────────────────────────────────────────────────────── */
+.anim-fade-up   { animation: fade-in-up 0.2s ease-out both; }
+.anim-glow      { animation: glow-pulse 2.5s ease-in-out infinite; }
+.row-critical   { animation: critical-pulse 4s ease-in-out infinite; }
+.node-appear    { animation: node-appear 0.35s cubic-bezier(0.22,1,0.36,1) both; }
+.wire-draw      { animation: wire-draw 0.4s ease-out both; }
+.sim-pulse      { animation: sim-pulse 2s ease-in-out infinite; }
+
+/* ── Panel ─────────────────────────────────────────────────────────────────── */
+.splunk-panel {
+  background: var(--splunk-card);
+  border: 1px solid var(--splunk-border);
+  border-radius: 6px;
+}
+
+.splunk-panel-header {
+  background: var(--splunk-surface);
+  border-bottom: 1px solid var(--splunk-border);
+  padding: 8px 14px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--splunk-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 6px 6px 0 0;
+}
+
+/* ── Glass card ────────────────────────────────────────────────────────────── */
+.glass-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 8px;
+  backdrop-filter: blur(12px);
+}
+
+/* ── Glow button ───────────────────────────────────────────────────────────── */
+.btn-glow-green {
+  background: rgba(114,200,17,0.10);
+  border: 1px solid rgba(114,200,17,0.25);
+  color: #72c811;
+  transition: all 0.15s;
+}
+.btn-glow-green:hover {
+  background: rgba(114,200,17,0.18);
+  border-color: rgba(114,200,17,0.45);
+  box-shadow: 0 0 16px rgba(114,200,17,0.20);
+}
+
+.btn-glow-red {
+  background: rgba(239,68,68,0.08);
+  border: 1px solid rgba(239,68,68,0.20);
+  color: #fca5a5;
+  transition: all 0.15s;
+}
+.btn-glow-red:hover {
+  background: rgba(239,68,68,0.16);
+  border-color: rgba(239,68,68,0.45);
+  box-shadow: 0 0 18px rgba(239,68,68,0.22);
+}
+
+/* ── AI sparkle gradient ───────────────────────────────────────────────────── */
+.ai-gradient {
+  background: linear-gradient(135deg, #d946ef, #06b6d4);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── Splunk table ──────────────────────────────────────────────────────────── */
+.splunk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.splunk-table th {
+  background: var(--splunk-surface);
+  color: var(--splunk-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 6px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--splunk-border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.splunk-table td {
+  padding: 5px 12px;
+  border-bottom: 1px solid rgba(46,48,56,0.5);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.splunk-table tr:hover td { background: rgba(255,255,255,0.025); }
+
+/* ── Severity badges ───────────────────────────────────────────────────────── */
+.badge-critical { background: rgba(232,77,77,0.15);  color: #e84d4d; border: 1px solid rgba(232,77,77,0.35); }
+.badge-high     { background: rgba(244,169,38,0.15); color: #f4a926; border: 1px solid rgba(244,169,38,0.35); }
+.badge-medium   { background: rgba(78,154,241,0.15); color: #4e9af1; border: 1px solid rgba(78,154,241,0.35); }
+.badge-low      { background: rgba(114,200,17,0.12); color: #72c811; border: 1px solid rgba(114,200,17,0.30); }
+.badge-info     { background: rgba(107,110,128,0.20);color: #8b8fa8; border: 1px solid rgba(107,110,128,0.30); }
+.badge-sim      { background: rgba(114,200,17,0.10); color: #72c811; border: 1px solid rgba(114,200,17,0.25); }
+
+/* Recharts */
+.recharts-tooltip-wrapper { font-family: inherit !important; }

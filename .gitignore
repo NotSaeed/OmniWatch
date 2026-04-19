@@ -1,0 +1,36 @@
+# Environment
+.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Database
+*.db
+*.sqlite
+
+# Logs
+backend/logs/*.log
+backend/logs/errors.log
+
+# Dataset (large file — not for git)
+data/botsv3/*.json
+data/botsv3/*.csv
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS
+.DS_Store
+Thumbs.db
+
+data/uploads/
+
+data/monitor/
