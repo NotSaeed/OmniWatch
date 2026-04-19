@@ -7,10 +7,11 @@ import type { CicidsLog, CtiEnrichment, MitreTechnique } from "../lib/types";
 import { SEVERITY_BADGE } from "../lib/utils";
 
 interface Props {
-  log:     CicidsLog;
-  report:  string | null;     // null = still loading
-  cti:     CtiEnrichment | null;
-  onClose: () => void;
+  log:          CicidsLog;
+  report:       string | null;     // null = still loading
+  cti:          CtiEnrichment | null;
+  aiGenerated:  boolean;
+  onClose:      () => void;
 }
 
 // ── Dark-theme markdown component map ────────────────────────────────────────
@@ -472,7 +473,7 @@ function buildPdfHtml(
   </div>
 
   <div class="page-footer">
-    <span>OmniWatch AI-SOC · Powered by Claude (Anthropic) · Confidential</span>
+    <span>OmniWatch AI-SOC · Powered by Phi-3-Mini (Ollama) · Confidential</span>
     <span class="tlp-badge">TLP: AMBER</span>
     <span>Report ID: IR-${Date.now().toString(36).toUpperCase()}</span>
   </div>
@@ -483,7 +484,7 @@ function buildPdfHtml(
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function IncidentReportModal({ log, report, cti, onClose }: Props) {
+export function IncidentReportModal({ log, report, cti, aiGenerated, onClose }: Props) {
   const reportBodyRef = useRef<HTMLDivElement>(null);
 
   // Close on Escape
@@ -608,6 +609,18 @@ export function IncidentReportModal({ log, report, cti, onClose }: Props) {
             <Skeleton />
           ) : (
             <div ref={reportBodyRef}>
+              {!aiGenerated && (
+                <div className="rounded-lg border border-amber-700/40 bg-amber-950/20 px-4 py-3 mb-4 flex items-start gap-2">
+                  <span className="text-amber-400 text-sm shrink-0 mt-0.5">⚠</span>
+                  <div>
+                    <p className="text-xs font-semibold text-amber-300">Local Fallback Report</p>
+                    <p className="text-[11px] text-amber-500/80 mt-0.5">
+                      Ollama (Phi-3-Mini) is not connected. This report was generated from a deterministic
+                      template using real event data — not by an AI model. Start Ollama for full AI-generated analysis.
+                    </p>
+                  </div>
+                </div>
+              )}
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>
                 {report}
               </ReactMarkdown>
@@ -621,7 +634,7 @@ export function IncidentReportModal({ log, report, cti, onClose }: Props) {
           <div className="flex items-center gap-2">
             <span className="w-1 h-1 rounded-full bg-cyan-500 anim-glow" />
             <span className="text-[10px] text-slate-700">
-              Powered by Claude · OmniWatch AI-SOC
+              {aiGenerated ? "Powered by Phi-3-Mini (Ollama) · OmniWatch AI-SOC" : "Deterministic Template · Ollama Offline"}
             </span>
           </div>
           <button

@@ -56,9 +56,10 @@ catches, false-positive rate, and one tuning recommendation.
 - Never use "simulated", "mock", "placeholder", or "TBD"."""
 
 
-async def generate_incident_report(event: dict, cti: dict | None = None) -> str:
+async def generate_incident_report(event: dict, cti: dict | None = None) -> dict:
     """
     Generate a Markdown Incident Response Report for a single network event.
+    Returns {"report": str, "ai_generated": bool} so the UI can indicate source.
     Falls back to a deterministic local report if Ollama is unavailable.
     """
     prompt = _build_prompt(event, cti)
@@ -66,10 +67,12 @@ async def generate_incident_report(event: dict, cti: dict | None = None) -> str:
 
     try:
         text = await client.generate_report(prompt, _SYSTEM_PROMPT)
-        return text or _fallback_report(event)
+        if text:
+            return {"report": text, "ai_generated": True}
+        return {"report": _fallback_report(event), "ai_generated": False}
     except OllamaUnavailableError as exc:
         logger.warning("Ollama unavailable for IR report: %s — using local fallback", exc)
-        return _fallback_report(event)
+        return {"report": _fallback_report(event), "ai_generated": False}
 
 
 def _build_prompt(event: dict, cti: dict | None = None) -> str:

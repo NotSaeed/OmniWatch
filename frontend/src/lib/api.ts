@@ -69,7 +69,7 @@ export const api = {
     http.post<IrReport>("/cicids/analyze", null, { params: { source_file: sourceFile } }).then(r => r.data),
 
   analyzeIncident: (log: CicidsLog) =>
-    http.post<{ report: string; generated_at: string; cti: CtiEnrichment }>(
+    http.post<{ report: string; ai_generated: boolean; generated_at: string; cti: CtiEnrichment }>(
       "/analyze-incident", log,
     ).then(r => r.data),
 
@@ -90,8 +90,8 @@ export const api = {
 
   getConfigStatus: () =>
     http.get<{
-      anthropic: boolean; abuseipdb: boolean; virustotal: boolean;
-      soar_live: boolean; claude_model: string;
+      ollama: boolean; abuseipdb: boolean; virustotal: boolean;
+      soar_live: boolean; ollama_model: string;
     }>("/config/status").then(r => r.data),
 
   resetSystem: () =>

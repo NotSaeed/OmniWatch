@@ -193,6 +193,7 @@ export function LogExplorer() {
   const [analyzingLog,   setAnalyzingLog]   = useState<CicidsLog | null>(null);
   const [incidentReport, setIncidentReport] = useState<string | null>(null);
   const [ctiData,        setCtiData]        = useState<CtiEnrichment | null>(null);
+  const [aiGenerated,    setAiGenerated]    = useState<boolean>(true);
 
   const [activeSearch,   setActiveSearch]   = useState("");
   const [activeSeverity, setActiveSeverity] = useState<Severity | "">("");
@@ -241,17 +242,20 @@ export function LogExplorer() {
     setAnalyzingLog(log);
     setIncidentReport(null);
     setCtiData(null);
+    setAiGenerated(true);
     try {
-      const { report, cti } = await api.analyzeIncident(log);
+      const { report, ai_generated, cti } = await api.analyzeIncident(log);
       setCtiData(cti ?? null);
       setIncidentReport(report);
+      setAiGenerated(ai_generated ?? false);
     } catch {
       setIncidentReport(
         "## Heuristic Analysis Complete\n\n" +
         "Automated AI narrative generation is currently queued or unavailable. " +
         "Relying on deterministic Tier 1 engine heuristics.\n\n" +
-        "**Next Step:** Retry in a moment, or verify your `ANTHROPIC_API_KEY` in Settings."
+        "**Next Step:** Retry in a moment, or verify Ollama is running in Settings."
       );
+      setAiGenerated(false);
     }
   }
 
@@ -456,6 +460,7 @@ export function LogExplorer() {
           log={analyzingLog}
           report={incidentReport}
           cti={ctiData}
+          aiGenerated={aiGenerated}
           onClose={() => { setAnalyzingLog(null); setIncidentReport(null); setCtiData(null); }}
         />
       )}

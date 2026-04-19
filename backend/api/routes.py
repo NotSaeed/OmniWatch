@@ -288,9 +288,10 @@ async def analyze_incident(event: dict = Body(...)):
     from services.cti_enrichment import enrich_event
 
     cti       = await enrich_event(event)
-    report_md = await generate_incident_report(event, cti=cti)
+    result    = await generate_incident_report(event, cti=cti)
     return {
-        "report":       report_md,
+        "report":       result["report"],
+        "ai_generated": result["ai_generated"],
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
         "cti":          cti,
     }
@@ -391,17 +392,30 @@ async def system_reset():
 
 @router.get("/api/config/status")
 async def config_status():
-    """Returns which API keys are configured (values never exposed)."""
+    """Returns which integrations are active (values never exposed)."""
     import os
+    import httpx
+
     def _set(key: str) -> bool:
         val = os.getenv(key, "")
         return bool(val and not val.startswith("your_"))
+
+    # Ollama is a local service — probe the health endpoint instead of an env var
+    ollama_url = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
+    ollama_ok = False
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(ollama_url)
+            ollama_ok = resp.status_code == 200
+    except Exception:
+        pass
+
     return {
-        "anthropic":   _set("ANTHROPIC_API_KEY"),
-        "abuseipdb":   _set("ABUSEIPDB_API_KEY"),
-        "virustotal":  _set("VIRUSTOTAL_API_KEY"),
-        "soar_live":   os.getenv("SOAR_LIVE_MODE", "false").lower() == "true",
-        "claude_model": os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6"),
+        "ollama":       ollama_ok,
+        "abuseipdb":    _set("ABUSEIPDB_API_KEY"),
+        "virustotal":   _set("VIRUSTOTAL_API_KEY"),
+        "soar_live":    os.getenv("SOAR_LIVE_MODE", "false").lower() == "true",
+        "ollama_model": os.getenv("OLLAMA_MODEL", "phi-3-mini"),
     }
 
 

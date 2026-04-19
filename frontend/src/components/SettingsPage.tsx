@@ -6,26 +6,26 @@ import { api } from "../lib/api";
 
 const KEY_DEFS = [
   {
-    id:          "ANTHROPIC_API_KEY",
-    name:        "Anthropic (Claude)",
-    description: "Core AI triage engine — required for all AI features",
-    placeholder: "sk-ant-api03-…",
-    statusKey:   "anthropic" as const,
-    modelKey:    "claude_model" as const,
+    id: "OLLAMA_API_URL",
+    name: "Ollama",
+    description: "Local RAG edge intelligence for facility triage",
+    placeholder: "http://127.0.0.1:11434",
+    statusKey: "ollama" as const,
+    modelKey: "ollama_model" as const,
   },
   {
-    id:          "ABUSEIPDB_API_KEY",
-    name:        "AbuseIPDB",
+    id: "ABUSEIPDB_API_KEY",
+    name: "AbuseIPDB",
     description: "Real-time IP reputation lookups in CTI enrichment",
     placeholder: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-    statusKey:   "abuseipdb" as const,
+    statusKey: "abuseipdb" as const,
   },
   {
-    id:          "VIRUSTOTAL_API_KEY",
-    name:        "VirusTotal",
+    id: "VIRUSTOTAL_API_KEY",
+    name: "VirusTotal",
     description: "File/IP threat intelligence (mock scoring if key absent)",
     placeholder: "0000000000000000000000000000000000000000000000000000000000000000",
-    statusKey:   "virustotal" as const,
+    statusKey: "virustotal" as const,
   },
 ] as const;
 
@@ -37,19 +37,19 @@ export function SettingsPage() {
   const qc = useQueryClient();
 
   const { data, isLoading, isError } = useQuery({
-    queryKey:        ["config-status"],
-    queryFn:         api.getConfigStatus,
+    queryKey: ["config-status"],
+    queryFn: api.getConfigStatus,
     refetchInterval: 60_000,
   });
 
-  const [values,   setValues]   = useState<Record<string, string>>(() =>
+  const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(KEY_DEFS.map(k => [k.id, loadStored(k.id)])),
   );
-  const [saved,    setSaved]    = useState<Record<string, boolean>>({});
-  const [testing,  setTesting]  = useState<string | null>(null);
-  const [tested,   setTested]   = useState<Record<string, boolean>>({});
-  const [wiping,   setWiping]   = useState(false);
-  const [confirm,  setConfirm]  = useState(false);
+  const [saved, setSaved] = useState<Record<string, boolean>>({});
+  const [testing, setTesting] = useState<string | null>(null);
+  const [tested, setTested] = useState<Record<string, boolean>>({});
+  const [wiping, setWiping] = useState(false);
+  const [confirm, setConfirm] = useState(false);
 
   async function handleTest(id: string) {
     setTesting(id);
@@ -124,17 +124,16 @@ export function SettingsPage() {
         <div className="space-y-3">
           {KEY_DEFS.map(def => {
             const connected = data?.[def.statusKey] ?? false;
-            const isSaved   = saved[def.id] ?? false;
-            const model     = "modelKey" in def ? data?.[def.modelKey] : undefined;
+            const isSaved = saved[def.id] ?? false;
+            const model = "modelKey" in def ? data?.[def.modelKey] : undefined;
 
             return (
               <div
                 key={def.id}
-                className={`rounded-xl border p-4 transition-all ${
-                  connected
+                className={`rounded-xl border p-4 transition-all ${connected
                     ? "border-emerald-800/40 bg-emerald-950/20"
                     : "border-slate-800/50 bg-slate-900/40"
-                }`}
+                  }`}
               >
                 {/* Name + status row */}
                 <div className="flex items-start justify-between gap-3 mb-3">
@@ -194,11 +193,10 @@ export function SettingsPage() {
                     onClick={() => handleSave(def.id)}
                     disabled={!values[def.id]}
                     className={`shrink-0 px-3 py-1.5 rounded text-xs font-medium transition-all
-                                disabled:opacity-30 disabled:cursor-not-allowed active:scale-95 ${
-                      isSaved
+                                disabled:opacity-30 disabled:cursor-not-allowed active:scale-95 ${isSaved
                         ? "bg-emerald-900/50 border border-emerald-700/50 text-emerald-400"
                         : "bg-cyan-900/40 border border-cyan-700/40 text-cyan-300 hover:bg-cyan-800/50"
-                    }`}
+                      }`}
                   >
                     {isSaved
                       ? <><CheckCircle2 className="w-3 h-3 inline mr-1" />Saved</>
