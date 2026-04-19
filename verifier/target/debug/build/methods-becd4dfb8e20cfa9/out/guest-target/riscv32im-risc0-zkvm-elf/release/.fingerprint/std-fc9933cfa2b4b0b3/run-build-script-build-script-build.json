@@ -1,1 +1,0 @@
-{"rustc":6948544083420518857,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[3778966308548958430,"build_script_build",false,10505256838261291231]],"local":[{"RerunIfChanged":{"output":"riscv32im-risc0-zkvm-elf\\release\\build\\std-fc9933cfa2b4b0b3\\output","paths":["build.rs"]}}],"rustflags":[],"config":0,"compile_kind":0}

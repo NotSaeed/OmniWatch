@@ -34,3 +34,7 @@ Thumbs.db
 data/uploads/
 
 data/monitor/
+
+# Rust
+verifier/target/
+**/*.pdb

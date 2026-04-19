@@ -24,6 +24,8 @@ export interface Alert {
   source_type:         string;
   playbook_triggered:  string | null;
   scan_run_id:         string | null;
+  grounding_available: boolean | null;
+  grounding_score:     number | null;
 }
 
 export interface DashboardStats {

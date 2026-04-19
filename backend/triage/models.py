@@ -54,6 +54,9 @@ class TriageResult(BaseModel):
     log_type:            str            = "unknown"
     source_type:         str            = "simulated"
     playbook_triggered:  Optional[str]  = None
+    # Sprint 2 — RAG grounding fields
+    grounding_available: bool           = True
+    grounding_score:     Optional[float] = None
 
     @field_validator("confidence")
     @classmethod

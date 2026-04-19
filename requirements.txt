@@ -4,12 +4,6 @@
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
 
-# MCP server
-fastmcp==2.3.4
-
-# Anthropic Claude API
-anthropic==0.40.0
-
 # Database
 sqlalchemy[asyncio]==2.0.36
 aiosqlite==0.20.0
@@ -18,7 +12,7 @@ aiosqlite==0.20.0
 pydantic==2.10.3
 pydantic-settings==2.6.1
 
-# HTTP client (for threat intel APIs)
+# HTTP client (Ollama + threat intel APIs)
 httpx==0.28.1
 
 # Scheduling
@@ -32,3 +26,7 @@ watchdog==6.0.0
 
 # Environment
 python-dotenv==1.1.0
+
+# Local RAG — offline sentence embeddings (FP32)
+sentence-transformers==3.3.1
+numpy==1.26.4

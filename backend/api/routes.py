@@ -451,6 +451,8 @@ def _serialise_alert(alert) -> dict:
         "source_type":         alert.source_type,
         "playbook_triggered":  alert.playbook_triggered,
         "scan_run_id":         alert.scan_run_id,
+        "grounding_available": bool(alert.grounding_available) if alert.grounding_available is not None else True,
+        "grounding_score":     alert.grounding_score,
     }
 
 

@@ -1,0 +1,194 @@
+SECURE WATER TREATMENT (SWaT) FACILITY — OPERATIONAL REFERENCE DOCUMENT
+Process & Instrumentation Diagram (P&ID) Excerpt | Revision 4.1 | RESTRICTED
+
+================================================================================
+SECTION 1 — FACILITY OVERVIEW
+================================================================================
+
+The SWaT (Secure Water Treatment) testbed replicates a fully operational water
+treatment plant capable of producing five gallons of safe drinking water per
+minute. The facility is composed of six sequential process stages (P1 through
+P6), each controlled by a dedicated Siemens S7-300 PLC (Programmable Logic
+Controller) interconnected via an EtherNet/IP ring network.
+
+Network topology:
+  - OT Network VLAN 10: PLCs, field instruments, SCADA historian
+  - DMZ VLAN 20:         Engineering workstations, HMI terminals
+  - IT Network VLAN 30:  Business systems (no direct OT access)
+
+The SCADA historian (OSIsoft PI) archives process data at 1-second intervals.
+All inter-PLC communications use Modbus/TCP (port 502) or EtherNet/IP (port 44818).
+Remote I/O uses DNP3 (port 20000). OPC-UA (port 4840) serves the HMI layer.
+
+================================================================================
+SECTION 2 — PROCESS STAGE DESCRIPTIONS
+================================================================================
+
+STAGE P1 — RAW WATER INTAKE
+  PLC:         PLC1 (IP 192.168.1.10)
+  Instruments: FIT-101 (flow transmitter), LIT-101 (level indicator tank T-101)
+  Actuators:   MV-101 (motorised valve), P-101 (raw water pump)
+  Normal flow: 2.5–3.0 L/min (FIT-101 range: 0–5 L/min)
+  Tank T-101 normal level: 250–800 mm (alarm: HH >900 mm, LL <100 mm)
+  Modbus register map (PLC1):
+    40001 = FIT-101 flow rate (scaled int, 0–5000 = 0–5 L/min)
+    40002 = LIT-101 level mm
+    00001 = MV-101 state (coil: 1=open, 0=closed)
+    00002 = P-101 motor run (coil: 1=run, 0=stop)
+
+STAGE P2 — CHEMICAL DOSING (CHLORINATION)
+  PLC:         PLC2 (IP 192.168.1.20)
+  Instruments: AIT-201 (pH analyser), AIT-202 (ORP analyser), FIT-201 (dosing flow)
+  Actuators:   P-201, P-202, P-203 (chemical dosing pumps — NaCl, HCl, NaOCl)
+  Normal pH:   6.8–7.2 (alarm: <6.5 or >7.8)
+  Normal ORP:  300–400 mV (alarm: <200 mV indicates insufficient chlorination)
+  Safety interlock: if AIT-201 pH < 6.0, ALL P2 dosing pumps stop automatically.
+  Modbus register map (PLC2):
+    40001 = AIT-201 pH value (scaled: 0–1400 = pH 0.0–14.0)
+    40002 = AIT-202 ORP mV
+    00001 = P-201 run (NaCl pump)
+    00002 = P-202 run (HCl pump — caution: hydrochloric acid)
+    00003 = P-203 run (NaOCl pump — caution: sodium hypochlorite)
+
+STAGE P3 — ULTRAFILTRATION
+  PLC:         PLC3 (IP 192.168.1.30)
+  Instruments: FIT-301, FIT-302 (feed/permeate flow), DPIT-301 (differential pressure)
+  Actuators:   MV-301, MV-302, MV-303 (filter valves), P-301 (UF feed pump)
+  Normal DPIT-301: 0.05–0.10 bar (alarm: >0.20 bar indicates membrane fouling)
+  Backwash cycle: every 30 minutes, 3-minute duration — automated via PLC3 ladder logic
+
+STAGE P4 — DECHLORINATION (UV)
+  PLC:         PLC4 (IP 192.168.1.40)
+  Instruments: AIT-401 (sodium bisulphite dosing sensor), UIT-401 (UV intensity)
+  Actuators:   P-401 (UV unit), P-402 (NaHSO3 dosing pump)
+  UV intensity normal: >80% (alarm: <60% — lamp degradation)
+
+STAGE P5 — REVERSE OSMOSIS
+  PLC:         PLC5 (IP 192.168.1.50)
+  Instruments: FIT-501 (RO feed flow), FIT-502 (permeate), FIT-503 (reject)
+  Actuators:   P-501 (high-pressure RO pump), MV-501, MV-502, MV-503
+  Normal RO recovery: 75% (permeate/feed ratio)
+  High-pressure pump P-501: 10–12 bar operating pressure.
+  CRITICAL SAFETY INTERLOCK: if FIT-501 < 0.5 L/min AND P-501 run=1, PLC5
+  immediately forces P-501 stop and MV-501 closed to prevent dry-run damage.
+
+STAGE P6 — PRODUCT WATER STORAGE
+  PLC:         PLC6 (IP 192.168.1.60)
+  Instruments: LIT-601 (product tank level), FIT-601 (outlet flow)
+  Actuators:   P-601 (product distribution pump), MV-601 (outlet valve)
+  Tank T-601 capacity: 2500 L (normal operating level: 30–80%)
+
+================================================================================
+SECTION 3 — NETWORK SECURITY ARCHITECTURE
+================================================================================
+
+AUTHORISED COMMUNICATION PATHS:
+  - SCADA Historian (192.168.1.100) ↔ All PLCs: OPC-UA read-only (port 4840)
+  - Engineering WS (192.168.2.10)  ↔ All PLCs: Modbus/TCP write (port 502) — MAINTENANCE ONLY
+  - HMI Terminal (192.168.2.20)    ↔ All PLCs: OPC-UA read (port 4840)
+  - PLC1 ↔ PLC2: EtherNet/IP (port 44818) — interlocking handshake only
+  - PLC3 ↔ PLC4: EtherNet/IP (port 44818) — backwash coordination
+  - PLC5 ↔ PLC6: EtherNet/IP (port 44818) — fill-level handshake
+
+UNAUTHORISED PATTERNS (must trigger CRITICAL alert):
+  - Any Modbus write (function code 05=write coil, 06=write register, 15, 16)
+    from any IP other than 192.168.2.10 (engineering workstation) or PLC-to-PLC IPs
+  - Any OPC-UA session from outside VLAN 20
+  - DNP3 control output (function code 3 = direct operate) from unknown master
+  - SSH to any PLC IP (PLCs do not run SSH — any SSH to .1.x subnet is anomalous)
+  - Modbus broadcast (IP 255.255.255.255) — never used in normal operations
+  - Any traffic on port 44818 from VLAN 30 (IT network) to VLAN 10 (OT network)
+
+KNOWN SAFE POLLING PATTERNS:
+  - SCADA historian polls all PLCs every 1 second via OPC-UA (expect ~6 sessions)
+  - NTP synchronisation: PLCs sync to 192.168.1.200 (NTP server) every 64 seconds
+  - Syslog from PLCs to 192.168.1.201 (log server) — UDP 514, periodic
+  - Modbus TCP keep-alives between PLCs: expect 1–2 packets every 30 seconds
+
+================================================================================
+SECTION 4 — ALARM PRIORITY DEFINITIONS
+================================================================================
+
+PRIORITY 1 (SAFETY-CRITICAL — immediate operator action):
+  - Any PLC safety interlock activation
+  - Unauthorised Modbus write to any PLC register
+  - Process variable outside high-high (HH) or low-low (LL) alarm threshold
+  - Loss of communication to any PLC for > 10 seconds
+
+PRIORITY 2 (PROCESS ALARM — acknowledge within 5 minutes):
+  - Process variable outside high (H) or low (L) alarm threshold
+  - Dosing pump running without corresponding flow confirmation
+  - Membrane differential pressure approaching fouling threshold
+
+PRIORITY 3 (DIAGNOSTIC — acknowledge within 30 minutes):
+  - Instrument out-of-range reading (transmitter fault)
+  - Network communication quality degradation (packet loss > 0.1%)
+  - PLC CPU utilisation > 80%
+
+================================================================================
+SECTION 5 — INCIDENT RESPONSE PROCEDURES
+================================================================================
+
+ICS CYBER INCIDENT — IMMEDIATE RESPONSE PROTOCOL:
+
+Step 1 — ISOLATE: Disconnect affected PLC from EtherNet/IP ring at managed switch
+  port (SW1 ports 1–6 for PLC1–6). Use out-of-band console access to switches.
+
+Step 2 — HOLD: Place adjacent process stages in MANUAL HOLD mode to prevent
+  cascade process failures from the isolated PLC.
+
+Step 3 — VERIFY PHYSICAL STATE: Walk the P&ID — physically confirm actuator
+  positions match last-known safe state. Override electronically where needed.
+
+Step 4 — PRESERVE EVIDENCE: Capture network packet trace from the span port
+  on SW1 before any reconfiguration. Archive historian data for the incident window.
+
+Step 5 — RESTORE: Restore PLC from verified-clean firmware image stored on the
+  offline USB vault (located in Control Room cabinet CR-04, shelf 2).
+
+CONTACTS:
+  - Control Room Supervisor: extension 2100
+  - OT Security Officer:     extension 2200
+  - Process Engineer on-call: extension 2300
+  - Vendor Emergency Line (Siemens): +60-3-2096-XXXX
+
+================================================================================
+SECTION 6 — MODBUS FUNCTION CODE REFERENCE
+================================================================================
+
+READ operations (safe — monitoring only):
+  01 = Read Coils (digital outputs)
+  02 = Read Discrete Inputs (digital inputs)
+  03 = Read Holding Registers (analogue I/O, setpoints)
+  04 = Read Input Registers (analogue inputs, measurements)
+
+WRITE operations (restricted to engineering workstation 192.168.2.10):
+  05 = Write Single Coil           (actuator command — HIGH RISK)
+  06 = Write Single Register       (setpoint change — HIGH RISK)
+  15 = Write Multiple Coils        (bulk actuator — CRITICAL RISK)
+  16 = Write Multiple Registers    (bulk setpoints — CRITICAL RISK)
+  22 = Mask Write Register         (bit-level setpoint — CRITICAL RISK)
+  23 = Read/Write Multiple Registers
+
+Any write function code from an unauthorised source IP constitutes a
+POTENTIAL CYBER ATTACK and must be escalated to Priority 1 immediately.
+
+================================================================================
+SECTION 7 — NORMAL TRAFFIC BASELINES (for anomaly detection)
+================================================================================
+
+Expected daily traffic volume per PLC (historian polling + HMI):
+  - OPC-UA inbound:  ~50 MB/day (read-only polling at 1 Hz)
+  - Modbus inbound:  ~2 MB/day  (engineering checks, scheduled maintenance)
+  - EtherNet/IP:     ~10 MB/day (inter-PLC interlocks)
+
+Anomaly thresholds (trigger investigation if exceeded):
+  - Modbus write rate: > 1 write/minute from engineering WS = warning
+  - Modbus write rate: > 1 write/minute from ANY other source = CRITICAL
+  - OPC-UA session count: > 8 simultaneous = anomalous (normal = 6)
+  - New Modbus master IP: ANY new source IP = immediate alert
+  - DNP3 from unrecognised master: = CRITICAL
+  - EtherNet/IP from VLAN 30: = CRITICAL (IT-OT boundary violation)
+
+Legitimate external connections: NONE. This facility is fully air-gapped.
+Any outbound connection to a public IP address is a confirmed compromise indicator.

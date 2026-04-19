@@ -28,6 +28,20 @@ def get_db_path() -> str:
 
 
 async def create_tables() -> None:
-    """Create all tables on startup if they don't exist."""
+    """Create all tables on startup if they don't exist, then apply migrations."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _migrate(conn)
+
+
+async def _migrate(conn) -> None:
+    """Idempotent ALTER TABLE migrations for schema additions."""
+    migrations = [
+        "ALTER TABLE alerts ADD COLUMN grounding_available INTEGER DEFAULT 1",
+        "ALTER TABLE alerts ADD COLUMN grounding_score REAL",
+    ]
+    for sql in migrations:
+        try:
+            await conn.execute(__import__("sqlalchemy").text(sql))
+        except Exception:
+            pass  # column already exists — SQLite raises OperationalError

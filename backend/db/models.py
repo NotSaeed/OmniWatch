@@ -50,6 +50,8 @@ class Alert(Base):
     source_type:         Mapped[str]        = mapped_column(String, default="simulated")
     playbook_triggered:  Mapped[str | None] = mapped_column(String, nullable=True)
     scan_run_id:         Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    grounding_available: Mapped[int]        = mapped_column(Integer, default=1)   # 1=True, 0=False
+    grounding_score:     Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class ScanRun(Base):

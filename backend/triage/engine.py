@@ -1,165 +1,147 @@
 """
-OmniWatch AI Triage Engine
-Orchestrates: MCP log retrieval → Claude tool_use call → validation → MITRE enrichment.
+OmniWatch AI Triage Engine — Sprint 2 (Air-Gapped Local Pipeline)
+Orchestrates: RAG retrieval → Ollama/Phi-3-Mini → validation → MITRE enrichment.
+Anthropic dependency removed; all inference is local.
 """
 
-import json
 import logging
-import os
-from pathlib import Path
+import uuid
+from datetime import datetime, timezone
 
-import anthropic
-
+from llm.ollama_client import OllamaUnavailableError, get_client
+from ingestion.rag.retriever import SIMILARITY_THRESHOLD, retrieve
 from triage.mitre_map import get_techniques
-from triage.models import TriageResult
+from triage.models import (
+    FalsePositiveRisk,
+    SeverityLevel,
+    ThreatCategory,
+    TriageResult,
+)
 from triage.prompts import SYSTEM_PROMPT, build_triage_prompt
 from triage.validator import validate_batch
 
 logger = logging.getLogger(__name__)
 
-# ── Claude client ─────────────────────────────────────────────────────────────
-_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-MODEL   = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
-
-# Chunk size: how many log lines to send per Claude call
-CHUNK_SIZE = int(os.getenv("TRIAGE_CHUNK_SIZE", "50"))
-
-
-# ── Tool schema — forces Claude to produce structured TriageResult JSON ────────
-TRIAGE_TOOL: dict = {
-    "name": "triage_alert",
-    "description": (
-        "Record a triaged security alert. Call this once per distinct threat event found "
-        "in the provided log lines. If no threats are found, call with category=BENIGN."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "severity": {
-                "type": "string",
-                "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
-                "description": "Threat severity level.",
-            },
-            "category": {
-                "type": "string",
-                "enum": ["BRUTE_FORCE", "PORT_SCAN", "MALWARE", "EXFILTRATION", "ANOMALY", "BENIGN"],
-                "description": "Primary threat category.",
-            },
-            "confidence": {
-                "type": "number",
-                "minimum": 0.0,
-                "maximum": 1.0,
-                "description": "Confidence score (0.0–1.0) based on evidence quality.",
-            },
-            "source_ip": {
-                "type": "string",
-                "description": "Attacker or source IP address as it appears in the logs. Null if not present.",
-            },
-            "affected_asset": {
-                "type": "string",
-                "description": "Target hostname, IP, or service as it appears in the logs. Null if not present.",
-            },
-            "raw_log_excerpt": {
-                "type": "string",
-                "description": "The exact log line(s) that triggered this alert (verbatim from the provided data).",
-            },
-            "ai_reasoning": {
-                "type": "string",
-                "description": "Concise explanation of your reasoning: what patterns you saw, why you chose this severity and category.",
-            },
-            "recommendations": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "action":   {"type": "string"},
-                        "priority": {"type": "integer", "minimum": 1, "maximum": 5},
-                    },
-                    "required": ["action", "priority"],
-                },
-                "description": "Ordered list of recommended analyst actions (priority 1 = most urgent).",
-            },
-            "false_positive_risk": {
-                "type": "string",
-                "enum": ["LOW", "MEDIUM", "HIGH"],
-                "description": "Likelihood this alert is a false positive.",
-            },
-        },
-        "required": [
-            "severity", "category", "confidence",
-            "raw_log_excerpt", "ai_reasoning",
-            "false_positive_risk",
-        ],
-    },
-}
+CHUNK_SIZE = int(__import__("os").getenv("TRIAGE_CHUNK_SIZE", "50"))
 
 
 # ── Core triage function ───────────────────────────────────────────────────────
 
 async def triage_log_chunk(
-    log_lines: list[str],
-    log_type: str = "unknown",
+    log_lines:   list[str],
+    log_type:    str = "unknown",
     source_type: str = "simulated",
 ) -> list[TriageResult]:
     """
-    Send a chunk of log lines to Claude for triage.
-    Returns a list of validated, MITRE-enriched TriageResult objects.
+    Triage a chunk of log lines through the local RAG → Phi-3-Mini pipeline.
+
+    Flow:
+      1. RAG retrieval — cosine similarity against facility manuals
+      2a. Score < 0.70 → return single BENIGN result with grounding_available=False
+      2b. Score ≥ 0.70 → pass top-k context + logs to Phi-3-Mini (JSON mode)
+      3. Parse + validate JSON output
+      4. MITRE enrichment
+      5. Threat intel enrichment (AbuseIPDB — if key configured)
     """
     if not log_lines:
         return []
 
-    prompt = build_triage_prompt(log_lines, log_type=log_type, source_type=source_type)
+    # ── Step 1: RAG retrieval ─────────────────────────────────────────────────
+    query_text = "\n".join(log_lines[:10])   # use first 10 lines as query signal
+    rag_chunks, rag_score = retrieve(query_text)
 
-    try:
-        response = _client.messages.create(
-            model=MODEL,
-            max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            tools=[TRIAGE_TOOL],
-            tool_choice={"type": "any"},   # Force at least one tool call
-            messages=[{"role": "user", "content": prompt}],
+    if rag_chunks is None:
+        # Below threshold — deterministic No Grounding path, skip LLM entirely
+        logger.info(
+            "No Grounding: RAG score %.3f < %.2f for %s chunk (%d lines)",
+            rag_score, SIMILARITY_THRESHOLD, source_type, len(log_lines),
         )
-    except anthropic.APIError as exc:
-        logger.error("Claude API error during triage: %s", exc)
+        return [_no_grounding_result(log_lines, log_type, source_type, rag_score)]
+
+    rag_context = "\n\n".join(rag_chunks)
+
+    # ── Step 2: Build prompt ──────────────────────────────────────────────────
+    prompt = build_triage_prompt(
+        log_lines,
+        log_type=log_type,
+        source_type=source_type,
+        rag_context=rag_context,
+    )
+
+    # ── Step 3: Local LLM call ────────────────────────────────────────────────
+    client = get_client()
+    try:
+        raw_dict = await client.generate_triage(prompt, SYSTEM_PROMPT)
+    except OllamaUnavailableError as exc:
+        logger.error("Ollama unavailable during triage: %s", exc)
         return []
 
-    # Extract all triage_alert tool_use blocks from the response
-    raw_results = [
-        block.input
-        for block in response.content
-        if block.type == "tool_use" and block.name == "triage_alert"
-    ]
-
-    if not raw_results:
-        logger.warning("Claude returned no tool calls for %s log chunk (%d lines)", log_type, len(log_lines))
+    if "_parse_error" in raw_dict:
+        logger.warning("Phi-3-Mini returned non-JSON — rejecting chunk (%s)", source_type)
         return []
 
-    # Validate and enrich with MITRE mappings
-    validated = validate_batch(raw_results, log_type=log_type, source_type=source_type)
+    # ── Step 4: Validate + attach grounding metadata ──────────────────────────
+    raw_dict.setdefault("alert_id",   str(uuid.uuid4()))
+    raw_dict.setdefault("timestamp",  datetime.now(tz=timezone.utc).isoformat())
+    raw_dict.setdefault("log_type",   log_type)
+    raw_dict.setdefault("source_type", source_type)
+    raw_dict["grounding_available"] = True
+    raw_dict["grounding_score"]     = round(rag_score, 4)
+
+    validated = validate_batch([raw_dict], log_type=log_type, source_type=source_type)
     enriched  = [_enrich_mitre(r) for r in validated]
 
-    # Parallel threat intelligence enrichment — AbuseIPDB lookups for all source IPs
+    # ── Step 5: Threat intelligence enrichment ────────────────────────────────
     enriched = await _enrich_threat_intel(enriched)
     return enriched
 
 
+def _no_grounding_result(
+    log_lines:   list[str],
+    log_type:    str,
+    source_type: str,
+    rag_score:   float,
+) -> TriageResult:
+    """
+    Deterministic safe result returned when RAG similarity < SIMILARITY_THRESHOLD.
+    The LLM is never called — zero hallucination risk.
+    """
+    excerpt = log_lines[0][:200] if log_lines else "(empty chunk)"
+    return TriageResult(
+        alert_id            = str(uuid.uuid4()),
+        timestamp           = datetime.now(tz=timezone.utc),
+        severity            = SeverityLevel.INFO,
+        category            = ThreatCategory.BENIGN,
+        confidence          = 0.0,
+        source_ip           = None,
+        affected_asset      = None,
+        mitre_techniques    = [],
+        raw_log_excerpt     = excerpt,
+        ai_reasoning        = (
+            f"No Grounding Available — facility corpus similarity score {rag_score:.3f} "
+            f"is below the required threshold of {SIMILARITY_THRESHOLD:.2f}. "
+            "LLM analysis bypassed to prevent hallucination on out-of-scope events."
+        ),
+        recommendations     = [],
+        false_positive_risk = FalsePositiveRisk.LOW,
+        log_type            = log_type,
+        source_type         = source_type,
+        grounding_available = False,
+        grounding_score     = round(rag_score, 4),
+    )
+
+
 def _enrich_mitre(result: TriageResult) -> TriageResult:
-    """Merge Claude-provided MITRE IDs with static category mappings."""
     static_techniques = get_techniques(result.category)
     merged = list(dict.fromkeys(result.mitre_techniques + static_techniques))
     return result.model_copy(update={"mitre_techniques": merged})
 
 
 async def _enrich_threat_intel(results: list[TriageResult]) -> list[TriageResult]:
-    """
-    Enrich results with AbuseIPDB data for all unique source IPs.
-    Adjusts confidence and appends TI findings to ai_reasoning.
-    Non-fatal — if TI lookup fails the original result is returned unchanged.
-    """
     try:
         from mcp_connectors.threat_intel_server import enrich_results_with_ti
     except ImportError:
-        return results   # TI connector not available — skip silently
+        return results
 
     source_ips = [r.source_ip for r in results if r.source_ip]
     if not source_ips:
@@ -178,13 +160,12 @@ async def _enrich_threat_intel(results: list[TriageResult]) -> list[TriageResult
             reports = rep.get("total_reports", 0)
             ti_note = (
                 f" [TI: AbuseIPDB confirms {ip} — {score}% abuse confidence, "
-                f"{reports} community reports, verdict={rep['verdict']}]"
+                f"{reports} reports, verdict={rep['verdict']}]"
             )
-            # Boost confidence for corroborated IPs
-            new_confidence = min(result.confidence + 0.10, 1.0) if rep["verdict"] == "MALICIOUS" else result.confidence
-            result = result.model_copy(update={
+            new_conf = min(result.confidence + 0.10, 1.0) if rep["verdict"] == "MALICIOUS" else result.confidence
+            result   = result.model_copy(update={
                 "ai_reasoning": result.ai_reasoning + ti_note,
-                "confidence":   round(new_confidence, 4),
+                "confidence":   round(new_conf, 4),
             })
         updated.append(result)
     return updated
@@ -193,26 +174,16 @@ async def _enrich_threat_intel(results: list[TriageResult]) -> list[TriageResult
 # ── Full triage cycle ──────────────────────────────────────────────────────────
 
 async def run_full_triage_cycle(dataset: str = "simulated") -> list[TriageResult]:
-    """
-    Run a complete triage cycle across all available log sources.
-    Reads from flat log files (simulated) or BOTSv3 database events.
-    Returns all results sorted by severity (CRITICAL first).
-    """
-    from pathlib import Path
-
     all_results: list[TriageResult] = []
-
     if dataset == "simulated":
         all_results = await _triage_flat_logs()
     else:
         all_results = await _triage_db_events()
-
     return _sort_by_severity(all_results)
 
 
 async def _triage_flat_logs() -> list[TriageResult]:
-    """Triage the three flat log files (syslog, network, auth)."""
-    from mcp_server import LOG_FILES, _tail  # local import avoids circular
+    from mcp_server import LOG_FILES, _tail
 
     all_results: list[TriageResult] = []
     for log_type, path in LOG_FILES.items():
@@ -224,7 +195,6 @@ async def _triage_flat_logs() -> list[TriageResult]:
 
 
 async def _triage_db_events() -> list[TriageResult]:
-    """Triage normalized events from the BOTSv3 database, grouped by sourcetype."""
     import sqlite3
     from pathlib import Path
 
@@ -257,7 +227,6 @@ async def _triage_db_events() -> list[TriageResult]:
         except Exception as exc:
             logger.error("Error fetching %s events: %s", st, exc)
             continue
-
         if lines:
             results = await triage_log_chunk(lines, log_type="botsv3", source_type=st)
             all_results.extend(results)

@@ -1,3 +1,0 @@
-cargo:rerun-if-changed=guest/src/main.rs
-cargo:rerun-if-changed=guest/Cargo.toml
-[methods/build.rs] image ID: Digest(f60e922acc3abad4152ed401394ea8e72d9d4aa7b3d54adfebc1669430920977)

@@ -37,6 +37,8 @@ async def insert_alerts(
             source_type=r.source_type,
             playbook_triggered=r.playbook_triggered,
             scan_run_id=scan_run_id,
+            grounding_available=1 if r.grounding_available else 0,
+            grounding_score=r.grounding_score,
         )
         session.add(row)
         rows.append(row)
