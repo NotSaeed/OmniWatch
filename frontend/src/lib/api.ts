@@ -98,4 +98,21 @@ export const api = {
     http.delete<{ status: string; message: string; rows_deleted: number }>(
       "/system/reset",
     ).then(r => r.data),
+
+  // ── WebAuthn / FIDO2 ─────────────────────────────────────────────────────
+  webauthn: {
+    registerOptions: (username: string) =>
+      http.post("/webauthn/register-options", { username }).then(r => r.data),
+      
+    registerVerify: (username: string, response: any) =>
+      http.post<{ status: string }>("/webauthn/register-verify", { username, response }).then(r => r.data),
+      
+    authOptions: (username: string, nonce: string) =>
+      http.post("/webauthn/auth-options", { username, nonce }).then(r => r.data),
+      
+    authVerify: (username: string, nonce: string, response: any, receipt: any, target_ip?: string, label?: string) =>
+      http.post<{ status: string; message: string }>("/webauthn/auth-verify", 
+        { username, nonce, response, receipt, target_ip, label }
+      ).then(r => r.data),
+  }
 };

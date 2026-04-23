@@ -8,6 +8,7 @@ using the same invariants that the Rust ZkVM executes.
 import json
 import logging
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -147,16 +148,15 @@ def ingest_cicids_to_db(path: Path, db_path: str) -> dict:
                         # Dispatch to Rust prover binary via subprocess
                         try:
                             # We attempt to run the compiled Rust STARK prover
-                            prover_bin = str(Path(__file__).parent.parent.parent / "verifier" / "target" / "release" / "verifier.exe")
+                            exe_name = "verifier.exe" if sys.platform == "win32" else "verifier"
+                            prover_bin = str(Path(__file__).parent.parent.parent / "verifier" / "target" / "release" / exe_name)
                             result = subprocess.run([prover_bin], input=payload.encode(), capture_output=True, timeout=10)
                             if result.returncode != 0:
                                 logger.error(f"zkVM Prover failed: {result.stderr.decode()}")
                             else:
                                 logger.info(f"ZK Receipt Generated: {result.stdout.decode().strip()}")
                         except FileNotFoundError:
-                            # Graceful fallback: Simulate Receipt Generation if binary is uncompiled locally
-                            receipt_hash = hashlib.sha256(payload.encode()).hexdigest()
-                            logger.info(f"[SIMULATED ZKVM] Generated pseudo-receipt for CRITICAL payload: {receipt_hash[:16]}...")
+                            logger.error("zkVM Prover binary not found. Cryptographic verification explicitly failed. Aborting fallback.")
                         except Exception as e:
                             logger.error(f"zkVM Dispatch error: {e}")
 

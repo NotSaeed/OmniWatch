@@ -64,7 +64,7 @@ def generate_buffer_anomaly(count: int = 2) -> list[dict]:
             "dst_ip": PLC_IP,
             "transaction_id": random.randint(1, 65000),
             "protocol_id": 0,
-            "length": 250, # Fake large length
+            "length": 250, # Simulated large length to trigger the validation invariant
             "unit_id": 1,
             "function_code": 3,
             "data_hex": "0001" # Actual short length (Buffer Anomaly)

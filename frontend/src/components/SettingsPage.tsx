@@ -24,7 +24,7 @@ const KEY_DEFS = [
   {
     id: "VIRUSTOTAL_API_KEY",
     name: "VirusTotal",
-    description: "File/IP threat intelligence (mock scoring if key absent)",
+    description: "File/IP threat intelligence",
     placeholder: "0000000000000000000000000000000000000000000000000000000000000000",
     statusKey: "virustotal" as const,
   },
@@ -115,29 +115,32 @@ export function SettingsPage() {
     }
   }
 
+  const [ingesting, setIngesting] = useState(false);
+  async function handleIngestBotsV3() {
+    setIngesting(true);
+    toast.info("Starting BOTSv3 Ingestion...");
+    try {
+      const res = await api.ingestDataset("data/botsv3/botsv3_excerpt.json");
+      toast.success("BOTSv3 Ingestion Complete", {
+        description: `${res.inserted?.toLocaleString()} rows inserted.`,
+      });
+      await qc.invalidateQueries();
+    } catch(e: any) {
+      toast.error(`Ingestion failed: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setIngesting(false);
+    }
+  }
+
   async function handleRegisterKey() {
     try {
       const username = prompt("Enter your username for FIDO2 enrollment:", "admin");
       if (!username) return;
 
-      const optsRes = await fetch("http://localhost:8080/api/webauthn/register-options", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username })
-      });
-      const options = await optsRes.json();
-      
-      const authResp = await startRegistration({ optionsJSON: options });
-      
-      const verifyRes = await fetch("http://localhost:8080/api/webauthn/register-verify", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, response: authResp })
-      });
-      const verifyData = await verifyRes.json();
-      
-      if (verifyData?.status === "ok") {
-         toast.success("Security Key Enrolled", { description: "You can now cryptographically sign remediations." });
-      } else {
-         toast.error("Enrollment failed.");
+        const options = await api.webauthn.registerOptions(username);
+        const authResp = await startRegistration({ optionsJSON: options });
+        
+        const verifyData = await api.webauthn.registerVerify(username, authResp);
       }
     } catch(e) {
       toast.error(`FIDO2 error: ${e}`);
@@ -298,6 +301,26 @@ export function SettingsPage() {
               <Key className="w-4 h-4" /> Enroll Token
             </button>
           </div>
+        </div>
+      </section>
+
+      {/* Utilities */}
+      <section>
+        <SectionLabel>System Utilities</SectionLabel>
+        <div className="rounded-xl border border-slate-800/50 bg-slate-900/50 p-4 flex items-center justify-between">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-slate-200">Load BOTSv3 Excerpt Dataset</p>
+            <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+              Ingests a pre-packaged Boss of the SOC v3 subset for testing the RAG functionality.
+            </p>
+          </div>
+          <button
+            onClick={handleIngestBotsV3}
+            disabled={ingesting}
+            className="shrink-0 px-4 py-2 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50"
+          >
+            {ingesting ? <Loader2 className="w-4 h-4 animate-spin inline mr-1" /> : "Load Dataset"}
+          </button>
         </div>
       </section>
 

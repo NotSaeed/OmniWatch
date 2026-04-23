@@ -36,8 +36,22 @@ class VerifyAuthRequest(BaseModel):
     username: str
     nonce: str
     response: dict
+    receipt: dict | None = None
     target_ip: str | None = None
     label: str | None = None
+
+def convert_ieee_p1363_to_der(signature: bytes) -> bytes:
+    """Explicit IEEE P1363 to ASN.1 DER cryptographic translation."""
+    if len(signature) != 64:
+        return signature # Already DER or unknown format
+    
+    r = signature[:32].lstrip(b'\x00')
+    s = signature[32:].lstrip(b'\x00')
+    if not r: r = b'\x00'
+    if not s: s = b'\x00'
+    if r[0] & 0x80: r = b'\x00' + r
+    if s[0] & 0x80: s = b'\x00' + s
+    return bytes([0x30, len(r) + len(s) + 4, 0x02, len(r)]) + r + bytes([0x02, len(s)]) + s
 
 @router.post("/api/webauthn/register-options")
 async def register_options(req: RegisterRequest, session: AsyncSession = Depends(get_session)):
@@ -110,6 +124,18 @@ async def auth_options(req: AuthRequest, session: AsyncSession = Depends(get_ses
 @router.post("/api/webauthn/auth-verify")
 async def auth_verify(req: VerifyAuthRequest, session: AsyncSession = Depends(get_session)):
     import sqlalchemy as sa
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    import base64
+    
+    if not req.receipt:
+        raise HTTPException(400, "Dual-Verification failed: STARK receipt (Machine Proof) is explicitly missing.")
+
+    # Phase 4: Atomic Nonce/Replay check
+    stmt = sqlite_insert(SpentReceipt).values(nonce=req.nonce).on_conflict_do_nothing()
+    result = await session.execute(stmt)
+    if result.rowcount == 0:
+        raise HTTPException(400, "Receipt replay attack detected")
+
     user = (await session.execute(sa.select(User).where(User.username == req.username))).scalar()
     if not user:
         raise HTTPException(404, "User not found")
@@ -120,8 +146,19 @@ async def auth_verify(req: VerifyAuthRequest, session: AsyncSession = Depends(ge
         raise HTTPException(404, "Credential not found")
         
     try:
+        # Cryptographic IEEE to DER translation as mandated
+        raw_res = dict(req.response)
+        auth_data = raw_res.get("response", {})
+        sig_b64 = auth_data.get("signature", "")
+        if sig_b64:
+            pad = len(sig_b64) % 4
+            if pad: sig_b64 += "=" * (4 - pad)
+            sig_bytes = base64.urlsafe_b64decode(sig_b64.replace("-", "+").replace("_", "/"))
+            der_sig = convert_ieee_p1363_to_der(sig_bytes)
+            auth_data["signature"] = base64.urlsafe_b64encode(der_sig).decode('ascii').rstrip("=")
+        
         verification = verify_authentication_response(
-            credential=req.response,
+            credential=raw_res,
             expected_challenge=bytes.fromhex(user.current_challenge),
             expected_origin=ORIGIN,
             expected_rp_id=RP_ID,
@@ -130,9 +167,6 @@ async def auth_verify(req: VerifyAuthRequest, session: AsyncSession = Depends(ge
         )
         cred.sign_count = verification.new_sign_count
         
-        # Insert spent receipt to prevent replay
-        spent = SpentReceipt(nonce=req.nonce)
-        session.add(spent)
         user.current_challenge = None
         await session.commit()
         

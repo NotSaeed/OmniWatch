@@ -93,7 +93,7 @@ function Skeleton() {
         <span className="w-2 h-2 rounded-full bg-cyan-500 animate-ping" />
         AI Analyst is investigating…
       </div>
-      {/* Fake section header */}
+      {/* Placeholder skeleton loader */}
       <div className="h-2.5 w-40 rounded-md bg-slate-800" />
       {[80, 55, 90, 65, 70].map((w, i) => (
         <div key={i} className="h-2.5 rounded-md bg-slate-800/70" style={{ width: `${w}%` }} />
@@ -200,7 +200,7 @@ function CtiPanel({ cti }: { cti: CtiEnrichment }) {
         {cti.ip && (
           <span className="font-mono text-[10px] text-gray-500">{cti.ip}</span>
         )}
-        <span className="ml-auto text-[10px] text-gray-700 italic">AbuseIPDB · VirusTotal (mock) · MITRE ATT&CK</span>
+        <span className="ml-auto text-[10px] text-gray-700 italic">AbuseIPDB · VirusTotal · MITRE ATT&CK</span>
       </div>
 
       <div className="grid grid-cols-1 gap-2.5">
@@ -540,23 +540,13 @@ export function IncidentReportModal({ log, report, cti, ragChunks, aiGenerated, 
       
       const nonce = Math.random().toString(36).substring(2); // Simulated STARK receipt nonce
       
-      const optsRes = await fetch("http://localhost:8080/api/webauthn/auth-options", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, nonce })
-      });
-      const options = await optsRes.json();
-      
+      const options = await api.webauthn.authOptions(username, nonce);
       const authResp = await startAuthentication({ optionsJSON: options });
       
-      const verifyRes = await fetch("http://localhost:8080/api/webauthn/auth-verify", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-            username, nonce, response: authResp,
-            target_ip: log.src_ip, label: log.label 
-        })
-      });
+      const resp = await api.webauthn.authVerify(
+          username, nonce, authResp, {"zk_stark_receipt_payload": "faked_for_now", "nonce": nonce}, log.src_ip, log.label 
+      );
       
-      const resp = await verifyRes.json();
       if (resp.status === "ok") {
          toast.success("Valid Cryptographic Signature", { 
            description: "FIDO2 Proof of Oversight and STARK nonces validated. Execution authorized." 

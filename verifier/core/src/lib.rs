@@ -61,6 +61,11 @@ pub mod rules {
 /// One processed Modbus network flow record sent to the zkVM for evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModbusTelemetry {
+    // Identity fields to prevent cross-session replays
+    pub policy_version: u32,
+    pub conn_uid: String,
+    pub epoch_timestamp: u64,
+    
     /// Source IPv4 as big-endian octets.
     pub src_ip: [u8; 4],
     /// Destination IPv4 as big-endian octets.
@@ -106,6 +111,10 @@ impl ModbusTelemetry {
 /// on exactly the telemetry that produced `input_hash`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreatVerdict {
+    /// Security identifiers
+    pub policy_version: u32,
+    pub conn_uid: String,
+    pub epoch_timestamp: u64,
     /// SHA-256 of the bincode-encoded `NetworkTelemetry` input.
     /// Binds this verdict irrevocably to the telemetry that was evaluated.
     pub input_hash: [u8; 32],

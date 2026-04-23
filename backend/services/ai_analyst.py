@@ -65,6 +65,8 @@ async def generate_incident_report(event: dict, cti: dict | None = None) -> dict
     from ingestion.rag.retriever import retrieve
     
     query_text = f"Threat: {event.get('label', '')} on port {event.get('dst_port', '')} protocol {event.get('protocol', '')}"
+    if event.get("data_hex"):
+        query_text += f"\nModbus Payload Hex: {event.get('data_hex')}"
     chunks, max_score = retrieve(query_text)
     
     if chunks is None:
@@ -109,6 +111,7 @@ def _build_prompt(event: dict, cti: dict | None = None, chunks: list[str] | None
         f"| Protocol         | {_fmt(event.get('protocol'))} |",
         f"| Flow Duration    | {duration_s or _fmt(event.get('flow_duration'))} |",
         f"| Flow Bytes/s     | {_fmt(event.get('flow_bytes_s'))} |",
+        f"| Modbus Payload   | `{_fmt(event.get('data_hex', 'N/A'))}` |",
         f"| Source File      | {_fmt(event.get('source_file'))} |",
         f"| Ingested At      | {_fmt(event.get('ingested_at'))} |",
     ]

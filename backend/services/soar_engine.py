@@ -243,15 +243,31 @@ def execute_pending_playbook(db_path: str, target_ip: str, label: str) -> bool:
                 
             playbook_id = row["id"]
             detail = row["action_detail"]
-            
-            # Execute it
-            import httpx
-            pan_os_url = os.getenv("PAN_OS_URL", "http://localhost:8080/api/mock-firewall")
             actual_cmd = detail.replace("[SIMULATED]", "").strip()
-            res = httpx.post(pan_os_url, json={"command": actual_cmd}, timeout=2.0)
             
-            new_status = "SUCCESS" if res.status_code == 200 else "FAILED"
-            new_detail = actual_cmd if new_status == "SUCCESS" else detail.replace("[SIMULATED]", "[FAILED]").strip()
+            new_status = "FAILED"
+            new_detail = detail.replace("[SIMULATED]", "[FAILED]").strip()
+            
+            if os.getenv("SOAR_LIVE_MODE", "false").lower() == "true":
+                try:
+                    import subprocess
+                    proc = subprocess.run(actual_cmd.split(), capture_output=True, timeout=5)
+                    if proc.returncode == 0:
+                        new_status = "SUCCESS"
+                        new_detail = actual_cmd
+                except Exception as eval_exc:
+                    logger.error(f"Live SOAR execution failed: {eval_exc}")
+            else:
+                # Default Mock API execution
+                import httpx
+                pan_os_url = os.getenv("PAN_OS_URL", "http://localhost:8080/api/mock-firewall")
+                try:
+                    res = httpx.post(pan_os_url, json={"command": actual_cmd}, timeout=2.0)
+                    if res.status_code == 200:
+                        new_status = "SUCCESS"
+                        new_detail = actual_cmd
+                except Exception as eval_exc:
+                    logger.error(f"Mock Firewall execution failed: {eval_exc}")
             
             conn.execute(
                 "UPDATE cicids_playbook_logs SET status = ?, action_detail = ? WHERE id = ?",

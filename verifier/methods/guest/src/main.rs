@@ -113,6 +113,9 @@ fn evaluate(t: &ModbusTelemetry, input_hash: [u8; 32]) -> ThreatVerdict {
     }
 
     ThreatVerdict {
+        policy_version: t.policy_version,
+        conn_uid: t.conn_uid.clone(),
+        epoch_timestamp: t.epoch_timestamp,
         input_hash,
         is_threat: cat != 0,
         category: cat,
