@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ingestion.rag.embedder import embed_texts
-from ingestion.rag.loader import load_chunks
+from ingestion.rag.loader import load_chunks, load_it_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -39,37 +39,54 @@ class VectorIndex:
         return (self.embeddings @ query_vec).astype(np.float32)
 
 
-# ── Module-level singleton ─────────────────────────────────────────────────────
+# ── Module-level singletons ────────────────────────────────────────────────────
 
-_index: VectorIndex | None = None
+_index:    VectorIndex | None = None   # OT/ICS (SWaT) corpus
+_it_index: VectorIndex | None = None   # IT security corpus (BOTSv3 / enterprise)
 
 
 def get_index() -> VectorIndex:
-    """Return the built index, building it on first call."""
+    """Return the OT corpus index, building it on first call."""
     global _index
     if _index is None:
-        _index = _build()
+        _index = _build(load_chunks, "data/facility_manuals/")
     return _index
 
 
-def _build() -> VectorIndex:
-    chunks = load_chunks()
+def get_it_index() -> VectorIndex:
+    """Return the IT security corpus index, building it on first call."""
+    global _it_index
+    if _it_index is None:
+        _it_index = _build(load_it_chunks, "data/rag_corpus/it_security/")
+    return _it_index
+
+
+def _build(loader_fn, corpus_label: str) -> VectorIndex:
+    chunks = loader_fn()
     if not chunks:
         logger.warning(
-            "No facility manuals found in data/facility_manuals/. "
-            "RAG retrieval will always return No Grounding Available."
+            "No corpus files found in %s. "
+            "RAG retrieval will always return No Grounding Available.",
+            corpus_label,
         )
         return VectorIndex()
 
-    logger.info("Building RAG index from %d chunks …", len(chunks))
+    logger.info("Building RAG index for %s from %d chunks …", corpus_label, len(chunks))
     embeddings = embed_texts(chunks)
-    logger.info("RAG index ready — %d chunks, shape %s, dtype %s",
-                len(chunks), embeddings.shape, embeddings.dtype)
+    logger.info("RAG index ready (%s) — %d chunks, shape %s, dtype %s",
+                corpus_label, len(chunks), embeddings.shape, embeddings.dtype)
     return VectorIndex(chunks=chunks, embeddings=embeddings)
 
 
 def rebuild_index() -> VectorIndex:
-    """Force a fresh rebuild (call after new manuals are added)."""
+    """Force a fresh rebuild of the OT index (call after new manuals are added)."""
     global _index
-    _index = _build()
+    _index = _build(load_chunks, "data/facility_manuals/")
     return _index
+
+
+def rebuild_it_index() -> VectorIndex:
+    """Force a fresh rebuild of the IT index (call after new corpus files are added)."""
+    global _it_index
+    _it_index = _build(load_it_chunks, "data/rag_corpus/it_security/")
+    return _it_index

@@ -3,14 +3,14 @@ CTI Enrichment Service
 
 Enriches CIC-IDS-2017 events with:
   1. AbuseIPDB  — real async API (ABUSEIPDB_API_KEY required)
-  2. VirusTotal — real async API (VIRUSTOTAL_API_KEY) with deterministic mock fallback
+  2. VirusTotal — real async API (VIRUSTOTAL_API_KEY required)
   3. MITRE ATT&CK — static offline label → technique mapping
 
 All functions are safe to call without keys: they return structured dicts with
-an "error" or "skipped" field instead of raising, so the UI always has data.
+a "skipped": True field and a human-readable "reason" instead of raising or
+returning fake scores. The UI should render these as "CTI Unavailable" badges.
 """
 
-import hashlib
 import logging
 import os
 
@@ -185,20 +185,18 @@ _REAL_DOMAINS = [
     "google.com", "contabo.com", "servermania.com",
 ]
 
-def _mock_abuseipdb(ip: str) -> dict:
-    digest  = int(hashlib.sha256(ip.encode()).hexdigest(), 16)
-    score   = 35 + digest % 60          # 35–94: always realistic threat score
-    reports = 12 + digest % 85          # 12–96: always plausible report count
-    idx     = digest % len(_REAL_ISPS)
+def _mock_abuseipdb(_ip: str) -> dict:
     return {
-        "abuse_confidence_score": score,
-        "country_code":           ["CN", "RU", "US", "BR", "DE", "NL", "IR", "KP", "UA", "RO"][digest % 10],
-        "isp":                    _REAL_ISPS[idx],
-        "domain":                 _REAL_DOMAINS[idx],
-        "total_reports":          reports,
-        "last_reported_at":       "2025-04-17T14:22:09+00:00",
-        "is_tor":                 (digest % 12) == 0,
-        "usage_type":             ["Data Center/Web Hosting/Transit", "ISP", "Content Delivery Network"][digest % 3],
+        "skipped": True,
+        "reason":  "API key not configured — configure ABUSEIPDB_API_KEY in .env",
+        "abuse_confidence_score": None,
+        "country_code":           None,
+        "isp":                    None,
+        "domain":                 None,
+        "total_reports":          None,
+        "last_reported_at":       None,
+        "is_tor":                 None,
+        "usage_type":             None,
     }
 
 
@@ -245,31 +243,21 @@ async def check_virustotal(ip: str | None) -> dict:
 
 
 def check_virustotal_mock(ip: str | None) -> dict:
-    """Deterministic, realistic IP reputation scoring — consistent per IP."""
+    """Returned when VirusTotal API key is absent or the request fails."""
     if not ip or ip in ("N/A", "0.0.0.0"):
         return {"skipped": True, "reason": "no_ip"}
 
-    digest = int(hashlib.sha256(ip.encode()).hexdigest(), 16)
-    rng    = digest % 10_000
-
-    malicious  = 8 + rng % 22           # 8–29: always realistic threat detection
-    suspicious = 3 + rng % 8            # 3–10: always realistic
-    total      = 94
-    harmless   = max(0, total - malicious - suspicious - (2 + rng % 6))
-    labels     = [
-        "malware", "scanner", "botnet", "bruteforce",
-        "dos-attacker", "phishing", "ransomware-distribution", "c2-server",
-    ]
-    threat = labels[digest % len(labels)]
-
     return {
-        "malicious":     malicious,
-        "suspicious":    suspicious,
-        "harmless":      harmless,
-        "undetected":    max(0, total - malicious - suspicious - harmless),
-        "total_engines": total,
-        "threat_label":  threat,
-        "last_analysis": "2025-04-17T08:15:00Z",
+        "skipped":       True,
+        "reason":        "API key not configured — configure VIRUSTOTAL_API_KEY in .env",
+        "malicious":     None,
+        "suspicious":    None,
+        "harmless":      None,
+        "undetected":    None,
+        "total_engines": None,
+        "threat_label":  None,
+        "last_analysis": None,
+        "is_mocked":     True,
     }
 
 

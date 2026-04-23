@@ -9,6 +9,7 @@ export function useWebSocket(onMessage: (msg: WsMessage) => void) {
 
   useEffect(() => {
     let reconnectTimer: ReturnType<typeof setTimeout>;
+    let isUnmounted = false;
 
     function connect() {
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
@@ -18,18 +19,21 @@ export function useWebSocket(onMessage: (msg: WsMessage) => void) {
       ws.onopen  = () => setConnected(true);
       ws.onclose = () => {
         setConnected(false);
-        reconnectTimer = setTimeout(connect, 3000);
+        if (!isUnmounted) {
+          reconnectTimer = setTimeout(connect, 3000);
+        }
       };
       ws.onerror = () => ws.close();
       ws.onmessage = (e) => {
         try {
-          cbRef.current(JSON.parse(e.data) as WsMessage);
+          if (!isUnmounted) cbRef.current(JSON.parse(e.data) as WsMessage);
         } catch { /* ignore malformed messages */ }
       };
     }
 
     connect();
     return () => {
+      isUnmounted = true;
       clearTimeout(reconnectTimer);
       wsRef.current?.close();
     };

@@ -7,6 +7,13 @@ and bulk-inserts normalized events into the database.
 import csv
 import logging
 import sqlite3
+import sys
+
+try:
+    csv.field_size_limit(sys.maxsize)
+except OverflowError:
+    csv.field_size_limit(2147483647)
+
 from collections import defaultdict
 from pathlib import Path
 from typing import Any

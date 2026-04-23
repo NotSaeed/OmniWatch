@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 
 from llm.ollama_client import OllamaUnavailableError, get_client
-from ingestion.rag.retriever import SIMILARITY_THRESHOLD, retrieve
+from ingestion.rag.retriever import IT_SIMILARITY_THRESHOLD, SIMILARITY_THRESHOLD, retrieve, retrieve_it
 from triage.mitre_map import get_techniques
 from triage.models import (
     FalsePositiveRisk,
@@ -17,7 +17,7 @@ from triage.models import (
     ThreatCategory,
     TriageResult,
 )
-from triage.prompts import SYSTEM_PROMPT, build_triage_prompt
+from triage.prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_IT, build_triage_prompt
 from triage.validator import validate_batch
 
 logger = logging.getLogger(__name__)
@@ -31,14 +31,18 @@ async def triage_log_chunk(
     log_lines:   list[str],
     log_type:    str = "unknown",
     source_type: str = "simulated",
+    rag_corpus:  str = "ot",
 ) -> list[TriageResult]:
     """
     Triage a chunk of log lines through the local RAG → Phi-3-Mini pipeline.
 
+    rag_corpus: "ot"  — OT/ICS path (SWaT corpus, threshold 0.70, OT system prompt)
+                "it"  — IT security path (enterprise corpus, threshold 0.30, IT system prompt)
+
     Flow:
-      1. RAG retrieval — cosine similarity against facility manuals
-      2a. Score < 0.70 → return single BENIGN result with grounding_available=False
-      2b. Score ≥ 0.70 → pass top-k context + logs to Phi-3-Mini (JSON mode)
+      1. RAG retrieval against the appropriate corpus
+      2a. Score < threshold → return BENIGN result with grounding_available=False
+      2b. Score ≥ threshold → pass top-k context + logs to Phi-3-Mini (JSON mode)
       3. Parse + validate JSON output
       4. MITRE enrichment
       5. Threat intel enrichment (AbuseIPDB — if key configured)
@@ -47,14 +51,20 @@ async def triage_log_chunk(
         return []
 
     # ── Step 1: RAG retrieval ─────────────────────────────────────────────────
-    query_text = "\n".join(log_lines[:10])   # use first 10 lines as query signal
-    rag_chunks, rag_score = retrieve(query_text)
+    query_text = "\n".join(log_lines[:10])
+    if rag_corpus == "it":
+        rag_chunks, rag_score = retrieve_it(query_text)
+        threshold  = IT_SIMILARITY_THRESHOLD
+        sys_prompt = SYSTEM_PROMPT_IT
+    else:
+        rag_chunks, rag_score = retrieve(query_text)
+        threshold  = SIMILARITY_THRESHOLD
+        sys_prompt = SYSTEM_PROMPT
 
     if rag_chunks is None:
-        # Below threshold — deterministic No Grounding path, skip LLM entirely
         logger.info(
-            "No Grounding: RAG score %.3f < %.2f for %s chunk (%d lines)",
-            rag_score, SIMILARITY_THRESHOLD, source_type, len(log_lines),
+            "No Grounding: RAG score %.3f < %.2f for %s chunk (%d lines) [corpus=%s]",
+            rag_score, threshold, source_type, len(log_lines), rag_corpus,
         )
         return [_no_grounding_result(log_lines, log_type, source_type, rag_score)]
 
@@ -66,12 +76,13 @@ async def triage_log_chunk(
         log_type=log_type,
         source_type=source_type,
         rag_context=rag_context,
+        rag_corpus=rag_corpus,
     )
 
     # ── Step 3: Local LLM call ────────────────────────────────────────────────
     client = get_client()
     try:
-        raw_dict = await client.generate_triage(prompt, SYSTEM_PROMPT)
+        raw_dict = await client.generate_triage(prompt, sys_prompt)
     except OllamaUnavailableError as exc:
         logger.error("Ollama unavailable during triage: %s", exc)
         return []
@@ -189,7 +200,10 @@ async def _triage_flat_logs() -> list[TriageResult]:
     for log_type, path in LOG_FILES.items():
         lines = _tail(path, CHUNK_SIZE)
         if lines:
-            results = await triage_log_chunk(lines, log_type=log_type, source_type=log_type)
+            # Simulated/flat logs are OT-context events
+            results = await triage_log_chunk(
+                lines, log_type=log_type, source_type=log_type, rag_corpus="ot"
+            )
             all_results.extend(results)
     return all_results
 
@@ -228,7 +242,10 @@ async def _triage_db_events() -> list[TriageResult]:
             logger.error("Error fetching %s events: %s", st, exc)
             continue
         if lines:
-            results = await triage_log_chunk(lines, log_type="botsv3", source_type=st)
+            # BOTSv3 events are enterprise IT — use IT corpus and system prompt
+            results = await triage_log_chunk(
+                lines, log_type="botsv3", source_type=st, rag_corpus="it"
+            )
             all_results.extend(results)
 
     return all_results

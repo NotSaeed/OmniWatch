@@ -48,6 +48,7 @@ export const api = {
   uploadCsv: (file: File, onProgress?: (pct: number) => void) => {
     const form = new FormData();
     form.append("file", file);
+    form.append("total_size", file.size.toString());
     return http.post<{ status: string; filename: string; path: string }>(
       "/upload",
       form,
@@ -94,6 +95,11 @@ export const api = {
 
   getActionedIps: () =>
     http.get<string[]>("/cicids/actioned-ips").then(r => r.data),
+
+  getHourlyDistribution: () =>
+    http.get<Array<{ hour: number; total: number; threats: number; benign: number }>>(
+      "/stats/hourly-distribution"
+    ).then(r => r.data),
 
   getConfigStatus: () =>
     http.get<{

@@ -23,7 +23,7 @@ const KEY_DEFS = [
   {
     id: "VIRUSTOTAL_API_KEY",
     name: "VirusTotal",
-    description: "File/IP threat intelligence (mock scoring if key absent)",
+    description: "File/IP threat intelligence (shows unavailable badge if key absent)",
     placeholder: "0000000000000000000000000000000000000000000000000000000000000000",
     statusKey: "virustotal" as const,
   },
@@ -53,13 +53,45 @@ export function SettingsPage() {
 
   async function handleTest(id: string) {
     setTesting(id);
-    await new Promise(r => setTimeout(r, 1400));
-    setTesting(null);
-    setTested(t => ({ ...t, [id]: true }));
-    setTimeout(() => setTested(t => ({ ...t, [id]: false })), 4000);
-    toast.success(`${id} — connection verified`, {
-      description: "API responded with a valid authentication token.",
-    });
+    try {
+      if (id === "OLLAMA_API_URL") {
+        const ollamaUrl = (values[id] || "http://127.0.0.1:11434").replace(/\/$/, "");
+        const resp = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(5000) });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const body = await resp.json();
+        const models: string[] = (body?.models ?? []).map((m: { name: string }) => m.name);
+        toast.success("Ollama reachable", {
+          description: models.length
+            ? `${models.length} model(s) available: ${models.slice(0, 3).join(", ")}`
+            : "Connected — no models pulled yet (run: ollama pull phi3:mini)",
+        });
+      } else {
+        // AbuseIPDB / VirusTotal — check backend config status
+        const status = await api.getConfigStatus();
+        const keyMap: Record<string, keyof typeof status> = {
+          ABUSEIPDB_API_KEY:  "abuseipdb",
+          VIRUSTOTAL_API_KEY: "virustotal",
+        };
+        const field = keyMap[id];
+        if (status[field]) {
+          toast.success(`${id} — key detected in backend .env`, {
+            description: "API key is configured. CTI enrichment will use real data.",
+          });
+        } else {
+          toast.warning(`${id} — key not set`, {
+            description: "Add this key to your backend .env file and restart the server.",
+          });
+        }
+      }
+      setTested(t => ({ ...t, [id]: true }));
+      setTimeout(() => setTested(t => ({ ...t, [id]: false })), 4000);
+    } catch (err) {
+      toast.error(`${id} — connection failed`, {
+        description: err instanceof Error ? err.message : "Could not reach service.",
+      });
+    } finally {
+      setTesting(null);
+    }
   }
 
   function handleSave(id: string) {

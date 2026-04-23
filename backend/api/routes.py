@@ -191,7 +191,8 @@ def _detect_dataset_type(path: Path) -> str:
 @router.post("/api/upload")
 async def upload_csv(
     file: UploadFile = File(...),
-    dataset_type: str = Form("auto")  # Default to auto-detection
+    dataset_type: str = Form("auto"),  # Default to auto-detection
+    total_size: int = Form(-1)
 ):
     """
     Upload a CSV log file (supports 200MB+).
@@ -217,6 +218,13 @@ async def upload_csv(
             if bytes_written - last_log > 50 * 1024 * 1024:
                 logger.info("Upload progress for %s: %d MB", file.filename, bytes_written // (1024*1024))
                 last_log = bytes_written
+
+    if total_size > 0 and bytes_written != total_size:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Upload incomplete. Received {bytes_written} of {total_size} bytes."
+        )
 
     logger.info("Upload complete: %s (%d MB)", file.filename, bytes_written // (1024*1024))
 
@@ -538,6 +546,44 @@ async def system_reset():
     except Exception as exc:
         logger.error("System reset failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Reset failed: {exc}")
+
+
+# ── Hourly event distribution ─────────────────────────────────────────────────
+
+@router.get("/api/stats/hourly-distribution")
+async def hourly_distribution():
+    """
+    Returns 24-hour event distribution from real ingested data.
+    Used by the Timeline chart — replaces the synthetic bell-curve formula.
+    """
+    from db.database import get_db_path
+    import sqlite3
+
+    db = get_db_path()
+    try:
+        conn = sqlite3.connect(db, timeout=5.0)
+        rows = conn.execute("""
+            SELECT
+                CAST(strftime('%H', ingested_at) AS INTEGER) AS hour,
+                COUNT(*) AS total,
+                SUM(CASE WHEN severity IN ('CRITICAL', 'HIGH') THEN 1 ELSE 0 END) AS threats,
+                SUM(CASE WHEN label = 'BENIGN' OR severity = 'INFO' THEN 1 ELSE 0 END) AS benign
+            FROM cicids_events
+            WHERE ingested_at IS NOT NULL
+            GROUP BY hour
+            ORDER BY hour
+        """).fetchall()
+        conn.close()
+    except Exception:
+        rows = []
+
+    # Build a 0–23 hour array, filling missing hours with zeros
+    hour_map = {r[0]: {"total": r[1], "threats": r[2] or 0, "benign": r[3] or 0}
+                for r in rows}
+    return [
+        {"hour": h, **hour_map.get(h, {"total": 0, "threats": 0, "benign": 0})}
+        for h in range(24)
+    ]
 
 
 # ── Config / API key status ───────────────────────────────────────────────────

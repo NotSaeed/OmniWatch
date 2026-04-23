@@ -12,6 +12,8 @@ venv/
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 
 # Logs
@@ -24,6 +26,7 @@ data/botsv3/*.csv
 
 # Node
 node_modules/
+test_*.csv
 frontend/dist/
 frontend/.vite/
 

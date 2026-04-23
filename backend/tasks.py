@@ -9,8 +9,6 @@ import logging
 import os
 import sqlite3
 import tempfile
-import uuid
-from datetime import datetime, timezone
 
 from db.crud import complete_scan_run, create_scan_run, insert_alerts, insert_playbook_log
 from db.database import AsyncSessionLocal
@@ -110,7 +108,7 @@ async def run_abc_cycle() -> None:
 
     db = _db_path()
     _ensure_edge_table(db)
-    conn = sqlite3.connect(db)
+    conn = sqlite3.connect(db, timeout=10.0)
 
     if _abc_processed:
         placeholders = ",".join("?" * len(_abc_processed))
@@ -171,6 +169,7 @@ async def _abc_auto_prove(
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120.0)
         except asyncio.TimeoutError:
             proc.kill()
+            await proc.wait()   # reap zombie — prevents fd/PID leaks
             logger.error("ABC: prover timed out for record %d", record_id)
             return
     finally:

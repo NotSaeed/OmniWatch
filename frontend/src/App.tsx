@@ -95,6 +95,11 @@ export default function App() {
   // ── Trust Chain & ABC State ────────────────────────────────────────────────
   const [isProvingRecordId, setIsProvingRecordId] = useState<number | null>(null);
   const [abcEnabled, setAbcEnabled] = useState(false);
+  const { data: abcStatus } = useQuery({
+    queryKey:        ["abc-status"],
+    queryFn:         api.getAbcStatus,
+    refetchInterval: 5000,
+  });
   const [dagNodes, setDagNodes] = useState<TrustNode[]>([
     { id: "edge",    label: "Edge Telemetry",    sublabel: "Pi 4 · Zeek + ICSNPP",       state: "verified",  position: [-4, 1.5, 0] },
     { id: "bincode", label: "Bincode Payload",   sublabel: "61-byte serialized struct",   state: "verified",  position: [-1.5, 1.5, 0] },
@@ -136,13 +141,11 @@ export default function App() {
     refetchInterval: 60_000,
   });
 
-  const { data: botsData, error: botsError, isLoading: botsLoading } = useQuery({
+  const { data: botsData } = useQuery({
     queryKey:        ["botsv3-dashboard"],
     queryFn:         api.getBotsv3Dashboard,
     refetchInterval: 60_000,
   });
-
-  if (botsError) console.error("BOTSv3 Dashboard Query Failed:", botsError);
 
   const { data: initialAlerts } = useQuery({
     queryKey: ["alerts-init"],
@@ -153,10 +156,14 @@ export default function App() {
     if (initialAlerts) setAlerts(initialAlerts);
   }, [initialAlerts]);
 
+  useEffect(() => {
+    return () => {
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    };
+  }, []);
+
   // ── WebSocket ──────────────────────────────────────────────────────────────
   const handleWsMessage = useCallback((msg: WsMessage) => {
-    console.log("[WebSocket Received]:", msg);
-
     if (msg.type === "scan_started") {
       setScanning(true);
       toast.info("Scan started…");
@@ -183,7 +190,7 @@ export default function App() {
   if (msg.type === "ingest_complete") {
       qc.invalidateQueries({ queryKey: ["botsv3-dashboard"] });
       qc.invalidateQueries({ queryKey: ["stats"] });
-      const total = (msg.data as any)?.total_stored ?? 0;
+      const total = msg.data.total_stored;
       toast.success(`BOTSv3 Ingestion Complete — ${total.toLocaleString()} raw events stored`, {
         description: "Heuristic Dashboard updated",
       });
@@ -572,17 +579,10 @@ export default function App() {
             {/* CISO Executive Report */}
             <button
               onClick={() => {
-                const tid = toast.loading("Compiling 24h Executive Summary…", {
-                  description: "Aggregating threat telemetry, SOAR metrics, and risk posture",
+                toast.info("Executive Report — coming soon", {
+                  description: "PDF export will aggregate alert telemetry, SOAR metrics, and MITRE coverage into a downloadable report.",
+                  duration: 5000,
                 });
-                setTimeout(() => {
-                  toast.success("PDF dispatched to CISO inbox", {
-                    id: tid,
-                    description: "24-page Executive Threat Report · Delivered via secure email channel",
-                    duration: 8000,
-                    style: { background: "#1e1f23", border: "1px solid #2e3038" },
-                  });
-                }, 2200);
               }}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold
                          transition-all active:scale-95 hover:opacity-90"
@@ -690,6 +690,11 @@ export default function App() {
                     <p className="text-[9px] mt-1" style={{ color: "#3d3f4a" }}>
                       ABC · ≥98% confidence · 15 s poll
                     </p>
+                    {(abcStatus?.processed_count ?? 0) > 0 && (
+                      <p className="text-[9px] mt-0.5 font-mono" style={{ color: "#06b6d480" }}>
+                        {abcStatus!.processed_count} auto-blocked
+                      </p>
+                    )}
                   </div>
                   <button
                     onClick={() => handleAbcToggle(!abcEnabled)}
@@ -945,39 +950,23 @@ function ThreatVectorChart({ cicidsStats, botsTactics }: { cicidsStats: CicidsSt
 
 // ── ThreatTimelineChart — 24h AreaChart of threat activity ───────────────────
 
-function buildTimeline(cicidsStats: CicidsStats | undefined) {
-  const total   = cicidsStats?.total ?? 0;
-  const byLabel = cicidsStats?.by_label ?? {};
-  const malTotal = Object.entries(byLabel)
-    .filter(([l]) => l.toUpperCase() !== "BENIGN")
-    .reduce((s, [, c]) => s + c, 0);
-  const benignTotal = total - malTotal;
-
-  // Distribute traffic over 24 hours with a realistic spike window (10:00–13:00)
-  return Array.from({ length: 24 }, (_, h) => {
-    // Bell-curve spike centred at 11:30
-    const dist  = Math.abs(h - 11.5);
-    const spike = dist < 3 ? Math.exp(-0.4 * dist * dist) : 0.04;
-
-    // Benign traffic follows normal business hours (8am–6pm peak)
-    const workHour    = h >= 8 && h <= 18;
-    const benignShare = workHour ? 1 / 11 : 1 / 60;
-
-    const threats = total === 0 ? 0 : Math.round(malTotal * spike * 0.55);
-    const benign  = total === 0 ? 0 : Math.round(benignTotal * benignShare);
-    const critical = Math.round(threats * 0.28);
-
-    return {
-      time:     `${h.toString().padStart(2, "0")}:00`,
-      threats,
-      benign,
-      critical,
-    };
-  });
-}
-
 function ThreatTimelineChart({ cicidsStats }: { cicidsStats: CicidsStats | undefined }) {
-  const data = useMemo(() => buildTimeline(cicidsStats), [cicidsStats]);
+  const { data: hourly } = useQuery({
+    queryKey:        ["hourly-distribution"],
+    queryFn:         api.getHourlyDistribution,
+    refetchInterval: 120_000,
+  });
+
+  const data = useMemo(() => {
+    if (!hourly || hourly.every(h => h.total === 0)) return [];
+    return hourly.map(h => ({
+      time:     `${h.hour.toString().padStart(2, "0")}:00`,
+      threats:  h.threats,
+      benign:   h.benign,
+      critical: Math.round(h.threats * 0.28),
+    }));
+  }, [hourly]);
+
   const hasData = (cicidsStats?.total ?? 0) > 0;
 
   const tooltip = {
@@ -1388,6 +1377,12 @@ function PlaybooksPage({ soarEntries }: { soarEntries: CicidsPlaybookLog[] }) {
     refetchInterval: 30_000,
   });
 
+  const { data: aiPlaybookLog = [] } = useQuery({
+    queryKey:        ["ai-playbook-log"],
+    queryFn:         () => api.getPlaybookLog(50),
+    refetchInterval: 30_000,
+  });
+
   const seen = new Set<number>();
   const merged: CicidsPlaybookLog[] = [];
   for (const e of [...soarEntries, ...persisted]) {
@@ -1441,6 +1436,33 @@ function PlaybooksPage({ soarEntries }: { soarEntries: CicidsPlaybookLog[] }) {
       <BentoPanel title="SOAR Activity Feed — Enforcement Log">
         <SOARActivity liveEntries={soarEntries} />
       </BentoPanel>
+
+      {aiPlaybookLog.length > 0 && (
+        <BentoPanel title="AI Triage SOAR Log — Claude-Triggered Playbooks">
+          <div className="space-y-1 p-1">
+            {aiPlaybookLog.map(entry => (
+              <div
+                key={entry.id}
+                className="flex items-start gap-3 px-3 py-2 rounded text-[10px] font-mono"
+                style={{ background: "#0d0d10", border: "1px solid #1a1a1f" }}
+              >
+                <span className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase"
+                  style={{ background: "rgba(114,200,17,0.10)", color: "#72c811", border: "1px solid #72c81130" }}>
+                  {entry.status}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <span style={{ color: "#c0c4d0" }}>{entry.playbook_name}</span>
+                  <span className="mx-1.5" style={{ color: "#3d3f4a" }}>·</span>
+                  <span style={{ color: "#6b6e80" }}>{entry.simulated_action}</span>
+                </div>
+                <span className="shrink-0" style={{ color: "#3d3f4a" }}>
+                  {new Date(entry.executed_at).toLocaleTimeString()}
+                </span>
+              </div>
+            ))}
+          </div>
+        </BentoPanel>
+      )}
 
       {editingEntry && (
         <PlaybookEditorModal

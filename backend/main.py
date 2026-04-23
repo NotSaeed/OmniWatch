@@ -21,6 +21,11 @@ from api.bincode_route import router as edge_router
 from api.prove_route import router as prove_router
 from api.abc_routes import router as abc_router
 from db.database import create_tables
+import starlette.formparsers
+import sys
+
+# Remove internal multipart max_part_size limits (fixes 41% upload stop bug for huge files)
+starlette.formparsers.MultiPartParser.max_part_size = sys.maxsize
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")

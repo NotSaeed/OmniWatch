@@ -187,7 +187,9 @@ export type WsMessage =
   | { type: "playbook_executed";     data: PlaybookLogEntry }
   | { type: "scan_complete";         scan_run_id: string; alerts_generated: number; playbooks_fired: number }
   | { type: "scan_error";            scan_run_id: string; error: string }
-  | { type: "ingest_complete";       data: Record<string, unknown> }
+  | { type: "ingest_started";        filename: string; source: string }
+  | { type: "ingest_complete";       data: { total_parsed: number; total_stored: number; by_sourcetype: Record<string, number>; skipped: number; dataset_name: string } }
+  | { type: "ingest_error";          filename: string; error: string }
   | { type: "cicids_ingest_started"; filename: string; source: string }
   | { type: "cicids_ingest_complete";filename: string; data: CicidsStats }
   | { type: "cicids_ingest_error";   filename: string; error: string }
