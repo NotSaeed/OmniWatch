@@ -103,11 +103,27 @@ function EventRow({ entry, index }: { entry: CicidsPlaybookLog; index: number })
 
       {/* Action summary */}
       <span
-        className="shrink-0 text-[10px] truncate max-w-[200px]"
+        className="shrink-0 text-[10px] truncate max-w-[160px]"
         style={{ color: "#6b6e80" }}
         title={entry.action}
       >
         {entry.action}
+      </span>
+
+      {/* Status badge */}
+      <span
+        className="shrink-0 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
+        style={
+          entry.status === "PENDING_AUTHORIZATION"
+            ? { background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.35)", color: "#f59e0b" }
+            : entry.status === "SUCCESS"
+            ? { background: "rgba(16,185,129,0.10)", border: "1px solid rgba(16,185,129,0.35)", color: "#10b981" }
+            : entry.status === "FAILED"
+            ? { background: "rgba(239,68,68,0.10)", border: "1px solid rgba(239,68,68,0.35)", color: "#ef4444" }
+            : { background: "rgba(107,110,128,0.10)", border: "1px solid rgba(107,110,128,0.25)", color: "#6b6e80" }
+        }
+      >
+        {entry.status === "PENDING_AUTHORIZATION" ? "PENDING" : entry.status}
       </span>
 
       {/* Time */}

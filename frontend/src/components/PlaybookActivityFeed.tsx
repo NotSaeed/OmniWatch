@@ -7,6 +7,9 @@ const STATUS_COLOR: Record<string, string> = {
   SIMULATED: "#72c811",
   ESCALATED: "#f4a926",
   SKIPPED:   "#6b6e80",
+  PENDING_AUTHORIZATION: "#f59e0b",
+  SUCCESS:   "#10b981",
+  FAILED:    "#ef4444",
 };
 
 export function PlaybookActivityFeed({ entries }: Props) {

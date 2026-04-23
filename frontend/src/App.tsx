@@ -514,6 +514,11 @@ function DashboardPage({
         <PurpleTeamMetrics />
       </div>
 
+      {/* Scoreboard 1: Proof-System Metrics (ARCHITECTURE.md §6) */}
+      <div className="px-3 pt-2 pb-0">
+        <ScoreboardOneMetrics />
+      </div>
+
       {/* Primary chart grid */}
       <div className="grid grid-cols-12 gap-2.5 p-3">
         {/* Left sidebar */}
@@ -776,6 +781,34 @@ function PurpleTeamMetrics() {
     { label: "Purple Team Coverage",value: "87%",   sub: "ATT&CK techniques covered", color: "#00d4c8" },
     { label: "False Positive Rate", value: "2.1%",  sub: "Analyst noise reduction",   color: "#f4a926" },
     { label: "Automated Response",  value: "100%",  sub: "SOAR playbook coverage",    color: "#8b5cf6" },
+  ];
+  return (
+    <div className="grid grid-cols-6 gap-2 px-3 pb-0 pt-0">
+      {metrics.map(m => (
+        <div
+          key={m.label}
+          className="rounded-lg px-3 py-2.5"
+          style={{ background: "#0d0d10", border: "1px solid #1a1a1f" }}
+        >
+          <p className="text-[9px] font-semibold uppercase tracking-widest" style={{ color: "#4d5060" }}>{m.label}</p>
+          <p className="text-lg font-bold mt-0.5 font-mono leading-none" style={{ color: m.color }}>{m.value}</p>
+          <p className="text-[8px] mt-1" style={{ color: "#3d3f4a" }}>{m.sub}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Scoreboard 1: Proof-System Metrics (ARCHITECTURE.md §6) ──────────────────
+
+function ScoreboardOneMetrics() {
+  const metrics = [
+    { label: "STARK Latency",     value: "9–17s",   sub: "End-to-end proof generation",       color: "#f4a926" },
+    { label: "Receipt Size",      value: "~230 KB",  sub: "Succinct STARK proof (no SNARK)",   color: "#e040fb" },
+    { label: "zkVM Cycles",       value: "~2.1M",    sub: "RISC-V guest execution cycles",     color: "#4e9af1" },
+    { label: "Peak RAM",          value: "~512 MB",  sub: "FRI polynomial commitments",        color: "#00d4c8" },
+    { label: "WASM Bundle",       value: "~15 MB",   sub: "risc0-zkvm verifier module",        color: "#8b5cf6" },
+    { label: "TTI Penalty",       value: "~3.2s",    sub: "Cold-cache WASM compilation",       color: "#e84d4d" },
   ];
   return (
     <div className="grid grid-cols-6 gap-2 px-3 pb-0 pt-0">

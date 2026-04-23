@@ -100,6 +100,17 @@ _MITRE_MAP: dict[str, list[dict]] = {
         {"id": "T1110.004", "name": "Credential Stuffing",               "tactic": "Credential Access"},
         {"id": "T1021.004", "name": "SSH",                               "tactic": "Lateral Movement"},
     ],
+    # ── ICS / Modbus-specific techniques (produced by the zkVM invariant engine) ──
+    "Illegal Write Command (FC 05/06)": [
+        {"id": "T0855",     "name": "Unauthorized Command Message",      "tactic": "Impair Process Control"},
+        {"id": "T0836",     "name": "Modify Parameter",                  "tactic": "Impair Process Control"},
+        {"id": "T0831",     "name": "Manipulation of Control",           "tactic": "Impact"},
+    ],
+    "Buffer Overflow Anomaly": [
+        {"id": "T0867",     "name": "Lateral Tool Transfer",             "tactic": "Lateral Movement"},
+        {"id": "T0830",     "name": "Man in the Middle",                 "tactic": "Collection"},
+        {"id": "T0806",     "name": "Brute Force I/O",                   "tactic": "Impair Process Control"},
+    ],
 }
 
 _ALIASES: dict[str, str] = {

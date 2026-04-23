@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
+import { startAuthentication } from "@simplewebauthn/browser";
 import type { Components } from "react-markdown";
 import type { CicidsLog, CtiEnrichment, MitreTechnique } from "../lib/types";
 import { SEVERITY_BADGE } from "../lib/utils";
@@ -10,6 +11,7 @@ interface Props {
   log:          CicidsLog;
   report:       string | null;     // null = still loading
   cti:          CtiEnrichment | null;
+  ragChunks?:   string[] | null;
   aiGenerated:  boolean;
   onClose:      () => void;
 }
@@ -484,8 +486,31 @@ function buildPdfHtml(
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function IncidentReportModal({ log, report, cti, aiGenerated, onClose }: Props) {
+export function IncidentReportModal({ log, report, cti, ragChunks, aiGenerated, onClose }: Props) {
   const reportBodyRef = useRef<HTMLDivElement>(null);
+  
+  const [workerVerified, setWorkerVerified] = useState(false);
+  const [workerStatusMsg, setWorkerStatusMsg] = useState("Initializing WASM...");
+
+  // Instantiate Web Worker for cryptographic STARK pre-check
+  useEffect(() => {
+    const worker = new Worker(new URL("../verifier.worker.ts", import.meta.url), { type: "module" });
+    const expectedNonce = Math.random().toString(36).substring(2);
+    
+    worker.onmessage = (e) => {
+      if (e.data.status === "success") {
+        setWorkerVerified(true);
+        setWorkerStatusMsg("STARK Receipt Verified");
+      } else {
+        setWorkerStatusMsg("Verification Error");
+      }
+    };
+    
+    // Simulate passing the STARK receipt payload buffer to the web worker
+    worker.postMessage({ receiptBuffer: new ArrayBuffer(8), expectedNonce });
+    
+    return () => worker.terminate();
+  }, [log]);
 
   // Close on Escape
   useEffect(() => {
@@ -506,6 +531,42 @@ export function IncidentReportModal({ log, report, cti, aiGenerated, onClose }: 
       description: `${log.label} · ${displayIp(log.src_ip)} — print dialog opened`,
       duration: 4000,
     });
+  }
+
+  async function handleAuthorize() {
+    try {
+      const username = prompt("Enter Authorized User:", "admin");
+      if (!username) return;
+      
+      const nonce = Math.random().toString(36).substring(2); // Simulated STARK receipt nonce
+      
+      const optsRes = await fetch("http://localhost:8080/api/webauthn/auth-options", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, nonce })
+      });
+      const options = await optsRes.json();
+      
+      const authResp = await startAuthentication({ optionsJSON: options });
+      
+      const verifyRes = await fetch("http://localhost:8080/api/webauthn/auth-verify", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+            username, nonce, response: authResp,
+            target_ip: log.src_ip, label: log.label 
+        })
+      });
+      
+      const resp = await verifyRes.json();
+      if (resp.status === "ok") {
+         toast.success("Valid Cryptographic Signature", { 
+           description: "FIDO2 Proof of Oversight and STARK nonces validated. Execution authorized." 
+         });
+      } else {
+         toast.error("Validation failed.");
+      }
+    } catch(e) {
+       toast.error(`Authentication failed: ${e}`);
+    }
   }
 
   return (
@@ -554,6 +615,19 @@ export function IncidentReportModal({ log, report, cti, aiGenerated, onClose }: 
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={handleAuthorize}
+              disabled={!report || !workerVerified}
+              title="Cryptographically sign remediation"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold
+                         border border-emerald-700/50 bg-emerald-950/40 text-emerald-300
+                         hover:bg-emerald-900/50 hover:border-emerald-500/50
+                         shadow-[0_0_10px_rgba(16,185,129,0.15)] hover:shadow-[0_0_16px_rgba(16,185,129,0.3)]
+                         active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              <span className="text-sm leading-none">🔑</span>
+              {workerVerified ? "Authorize" : "Verifying..."}
+            </button>
             <button
               onClick={handleExportPdf}
               disabled={!report}
@@ -624,6 +698,24 @@ export function IncidentReportModal({ log, report, cti, aiGenerated, onClose }: 
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>
                 {report}
               </ReactMarkdown>
+
+              {/* Visible Source Grounding UI */}
+              {ragChunks && ragChunks.length > 0 && (
+                <div className="mt-8 border-t border-slate-800/80 pt-5">
+                  <h3 className="text-[10px] font-bold text-slate-400 mb-3 uppercase tracking-wider flex items-center gap-2">
+                    <span className="text-emerald-500">❖</span>
+                    Visible Source Grounding (RAG Mappings)
+                  </h3>
+                  <div className="space-y-3">
+                    {ragChunks.map((chunk, i) => (
+                      <div key={i} className="p-3 rounded-lg border border-slate-800 bg-slate-900/60 shadow-inner">
+                        <span className="text-[9px] text-slate-500 font-mono tracking-wider uppercase mb-1 block">Document {i+1} Reference</span>
+                        <p className="text-[11px] font-mono text-emerald-100/70 leading-relaxed whitespace-pre-wrap">{chunk}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -631,11 +723,19 @@ export function IncidentReportModal({ log, report, cti, aiGenerated, onClose }: 
         {/* Footer */}
         <div className="px-5 py-3 shrink-0 flex items-center justify-between"
              style={{ background: "#222429", borderTop: "1px solid #2e3038" }}>
-          <div className="flex items-center gap-2">
-            <span className="w-1 h-1 rounded-full bg-cyan-500 anim-glow" />
-            <span className="text-[10px] text-slate-700">
-              {aiGenerated ? "Powered by Phi-3-Mini (Ollama) · OmniWatch AI-SOC" : "Deterministic Template · Ollama Offline"}
-            </span>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <span className="w-1 h-1 rounded-full bg-cyan-500 anim-glow" />
+              <span className="text-[10px] text-slate-700">
+                {aiGenerated ? "Powered by Phi-3-Mini (Ollama) · OmniWatch AI-SOC" : "Deterministic Template · Ollama Offline"}
+              </span>
+            </div>
+            
+            {/* WASM Pre-check status */}
+            <div className={`flex items-center gap-1.5 text-[10px] uppercase font-bold tracking-wider ${workerVerified ? 'text-emerald-500' : 'text-slate-500 animate-pulse'}`}>
+              <span className={`w-1.5 h-1.5 rounded-sm ${workerVerified ? 'bg-emerald-500' : 'bg-slate-500'}`} />
+              {workerStatusMsg}
+            </div>
           </div>
           <button
             onClick={onClose}

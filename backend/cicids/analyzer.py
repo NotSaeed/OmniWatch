@@ -73,14 +73,14 @@ _IR_TOOL = {
     },
 }
 
-_SYSTEM_PROMPT = """You are a Tier 2 SOC Analyst writing a formal Incident Response Report.
+_SYSTEM_PROMPT = """You are a Tier 2 SOC Analyst specializing in ICS/SCADA and Modbus TCP Protocols.
 
-Your reports must be:
-- Grounded in the provided telemetry — do not invent incidents not present in the data
+Your Incident Response Reports must be:
+- Grounded strictly in the provided ZkVM detected invariant violations — do not invent incidents.
 - Professional in tone (suitable for CISO review)
-- Technically precise: use correct MITRE ATT&CK technique IDs (format: T####.###)
-- Actionable: every finding must link to a concrete remediation step
-- Concise: executive summary is for leadership, attack details are for the technical team"""
+- Technically precise: outline the specific risk of Modbus Function Code abuses or buffer anomalies.
+- Actionable: recommend remediation steps like HMI isolation or PLC memory audits.
+- Concise: executive summary is for leadership, attack details are for the technical team."""
 
 
 async def generate_ir_report(attack_summary: dict) -> dict:
@@ -127,41 +127,34 @@ def _build_prompt(summary: dict) -> str:
         for a in attacks
     )
     tr = summary.get("time_range", {})
-    return f"""Analyze the following CIC-IDS-2017 network intrusion dataset and produce an Incident Response Report.
+    return f"""Analyze the following structural Modbus ZkVM invariant violations and produce an OT/ICS Incident Response Report.
 
 DATASET FILE : {summary.get('source_file', 'unknown')}
 TOTAL EVENTS : {summary.get('total_events', 0):,}
 TIME RANGE   : {tr.get('start', 'N/A')} → {tr.get('end', 'N/A')}
 
-DETECTED ATTACKS:
+DETECTED OT ANOMALIES (ZkVM INVARIANTS VIOLATED):
 {lines}
 
-For each attack type:
-1. Explain how the attack works and why it is dangerous
-2. Provide the correct MITRE ATT&CK technique ID(s)
-3. List concrete mitigation steps
-4. Identify the most impacted systems based on the IPs shown
+For each OT anomaly type:
+1. Explain how the Modbus packet deviation works and the impact on the PLC or SCADA process.
+2. Provide relevant MITRE ATT&CK for ICS technique IDs (Format T####.###).
+3. List concrete, OT-safe mitigation steps (DO NOT suggest patching PLCs during runtime).
+4. Identify the most impacted systems based on the IPs shown (e.g. HMI vs field device).
 
-End with prioritised immediate containment actions and long-term strategic recommendations."""
+End with prioritised immediate containment actions and long-term strategic OT recommendations."""
 
 
 _LABEL_MITRE: dict[str, list[str]] = {
-    "DoS":         ["T1498.001 — Direct Network Flood", "T1499.002 — Service Exhaustion Flood"],
-    "DDoS":        ["T1498.001 — Direct Network Flood", "T1498.002 — Reflection Amplification"],
-    "PortScan":    ["T1046 — Network Service Discovery", "T1595.001 — Scanning IP Blocks"],
-    "Bot":         ["T1071.001 — Web Protocols (C2)", "T1102 — Web Service", "T1571 — Non-Standard Port"],
-    "FTP-Patator": ["T1110.001 — Password Guessing", "T1078 — Valid Accounts"],
-    "SSH-Patator": ["T1110.001 — Password Guessing", "T1021.004 — SSH Remote Access"],
-    "Web Attack":  ["T1190 — Exploit Public-Facing Application", "T1059.007 — JavaScript / XSS"],
-    "Infiltration":["T1078 — Valid Accounts", "T1083 — File and Directory Discovery"],
-    "Heartbleed":  ["T1190 — Exploit Public-Facing Application", "T1552.004 — Private Keys"],
+    "Buffer Overflow Anomaly": ["T0846 — Modify Parameter", "T0814 — Denial of Service"],
+    "Illegal Write Command (FC 05/06)": ["T0836 — Modify Parameter", "T0856 — Spoofing Reporting Messages"],
 }
 
 def _label_mitre(label: str) -> list[str]:
     for k, v in _LABEL_MITRE.items():
-        if k.upper() in label.upper():
+        if k.upper() in label.upper() or label.upper() in k.upper():
             return v
-    return ["T1071 — Application Layer Protocol", "T1046 — Network Service Discovery"]
+    return ["T0836 — Modify Parameter", "T0801 — Monitor Process State"]
 
 
 def _fallback_report(summary: dict) -> dict:
@@ -176,11 +169,10 @@ def _fallback_report(summary: dict) -> dict:
             break
 
     executive_summary = (
-        f"Heuristic Analysis Complete: Tier 1 detection engine identified "
-        f"{len(attacks)} distinct threat class(es) across {total:,} network flow records "
-        f"sourced from '{source}'. Automated AI narrative generation is currently queued "
-        "or unavailable — relying on deterministic Tier 1 engine heuristics. "
-        "Immediate Tier 2 review is recommended for all CRITICAL and HIGH severity findings."
+        f"ZkVM Invariant Analysis Complete: The determininstic execution engine identified "
+        f"{len(attacks)} distinct OT structural violations across {total:,} Modbus flow records "
+        f"sourced from '{source}'. Immediate Tier 2 review is recommended by OT engineers "
+        "for all CRITICAL severity findings relating to unauthorized Write commands."
     )
 
     return {

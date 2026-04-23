@@ -69,7 +69,7 @@ export const api = {
     http.post<IrReport>("/cicids/analyze", null, { params: { source_file: sourceFile } }).then(r => r.data),
 
   analyzeIncident: (log: CicidsLog) =>
-    http.post<{ report: string; ai_generated: boolean; generated_at: string; cti: CtiEnrichment }>(
+    http.post<{ report: string; ai_generated: boolean; generated_at: string; cti: CtiEnrichment; rag_chunks?: string[] }>(
       "/analyze-incident", log,
     ).then(r => r.data),
 

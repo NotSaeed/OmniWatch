@@ -193,6 +193,7 @@ export function LogExplorer() {
   const [analyzingLog,   setAnalyzingLog]   = useState<CicidsLog | null>(null);
   const [incidentReport, setIncidentReport] = useState<string | null>(null);
   const [ctiData,        setCtiData]        = useState<CtiEnrichment | null>(null);
+  const [ragChunks,      setRagChunks]      = useState<string[] | null>(null);
   const [aiGenerated,    setAiGenerated]    = useState<boolean>(true);
 
   const [activeSearch,   setActiveSearch]   = useState("");
@@ -244,9 +245,10 @@ export function LogExplorer() {
     setCtiData(null);
     setAiGenerated(true);
     try {
-      const { report, ai_generated, cti } = await api.analyzeIncident(log);
+      const { report, ai_generated, cti, rag_chunks } = await api.analyzeIncident(log);
       setCtiData(cti ?? null);
       setIncidentReport(report);
+      setRagChunks(rag_chunks ?? null);
       setAiGenerated(ai_generated ?? false);
     } catch {
       setIncidentReport(
@@ -460,8 +462,9 @@ export function LogExplorer() {
           log={analyzingLog}
           report={incidentReport}
           cti={ctiData}
+          ragChunks={ragChunks}
           aiGenerated={aiGenerated}
-          onClose={() => { setAnalyzingLog(null); setIncidentReport(null); setCtiData(null); }}
+          onClose={() => { setAnalyzingLog(null); setIncidentReport(null); setCtiData(null); setRagChunks(null); }}
         />
       )}
     </div>

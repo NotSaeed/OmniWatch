@@ -160,6 +160,9 @@ def run_soar_on_ingest(db_path: str, source_file: str = "") -> list[dict]:
     # ── match and persist ─────────────────────────────────────────────────────
     fired: list[dict] = []
     now_iso = datetime.now(tz=timezone.utc).isoformat()
+    
+    import os
+    soar_live_mode = os.getenv("SOAR_LIVE_MODE", "false").lower() == "true"
 
     rows_to_insert: list[tuple] = []
     for row in critical_rows:
@@ -175,13 +178,18 @@ def run_soar_on_ingest(db_path: str, source_file: str = "") -> list[dict]:
         t0     = time.monotonic()
         action = pb["action"].format(ip=target_ip)
         detail = pb["detail"].format(ip=target_ip)
+        if soar_live_mode:
+            status = "PENDING_AUTHORIZATION"
+        else:
+            status = "SIMULATED"
+
         _ = time.monotonic() - t0   # kept for logging parity
 
         entry = {
             "executed_at":  now_iso,
             "playbook_name":pb["name"],
             "action":       action,
-            "status":       "SIMULATED",
+            "status":       status,
             "target_ip":    target_ip,
             "target_port":  row["dst_port"],
             "label":        label,
@@ -210,6 +218,52 @@ def run_soar_on_ingest(db_path: str, source_file: str = "") -> list[dict]:
         logger.info("SOAR: %d playbook(s) fired for file '%s'", len(fired), source_file or "*")
 
     return fired
+
+
+def execute_pending_playbook(db_path: str, target_ip: str, label: str) -> bool:
+    """Invoked explicitly by the WebAuthn verification endpoint after FIDO2 signing.
+    Dispatches the HTTP command to the local firewall and updates SQLite status."""
+    import os
+    soar_live_mode = os.getenv("SOAR_LIVE_MODE", "false").lower() == "true"
+    if not soar_live_mode:
+        return True
+
+    # Find the pending playbook
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT id, action_detail FROM cicids_playbook_logs WHERE target_ip = ? AND label = ? AND status = 'PENDING_AUTHORIZATION' LIMIT 1",
+                (target_ip, label)
+            ).fetchone()
+            
+            if not row:
+                logger.warning(f"No pending SOAR playbook found for IP {target_ip} and label {label}")
+                return False
+                
+            playbook_id = row["id"]
+            detail = row["action_detail"]
+            
+            # Execute it
+            import httpx
+            pan_os_url = os.getenv("PAN_OS_URL", "http://localhost:8080/api/mock-firewall")
+            actual_cmd = detail.replace("[SIMULATED]", "").strip()
+            res = httpx.post(pan_os_url, json={"command": actual_cmd}, timeout=2.0)
+            
+            new_status = "SUCCESS" if res.status_code == 200 else "FAILED"
+            new_detail = actual_cmd if new_status == "SUCCESS" else detail.replace("[SIMULATED]", "[FAILED]").strip()
+            
+            conn.execute(
+                "UPDATE cicids_playbook_logs SET status = ?, action_detail = ? WHERE id = ?",
+                (new_status, new_detail, playbook_id)
+            )
+            conn.commit()
+            
+            logger.info(f"Live PAN-OS executed for {target_ip} ({new_status})")
+            return new_status == "SUCCESS"
+    except Exception as exc:
+        logger.error(f"Failed to execute pending playbook for {target_ip}: {exc}")
+        return False
 
 
 def ensure_soar_tables(db_path: str) -> None:

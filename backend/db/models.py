@@ -81,3 +81,22 @@ class PlaybookLog(Base):
     execution_time_ms:Mapped[int]        = mapped_column(Integer, default=0)
     affected_asset:   Mapped[str | None] = mapped_column(String, nullable=True)
     notes:            Mapped[str]        = mapped_column(Text, default="")
+
+class User(Base):
+    __tablename__ = "users"
+    id:                 Mapped[str]      = mapped_column(String, primary_key=True)
+    username:           Mapped[str]      = mapped_column(String, unique=True, index=True)
+    current_challenge:  Mapped[str | None] = mapped_column(String, nullable=True)
+
+class WebAuthnCredential(Base):
+    __tablename__ = "webauthn_credentials"
+    id:               Mapped[str]        = mapped_column(String, primary_key=True)  # Credential ID
+    user_id:          Mapped[str]        = mapped_column(String, index=True)
+    public_key:       Mapped[bytes]      = mapped_column(String)  # Stored as hex or bytes
+    sign_count:       Mapped[int]        = mapped_column(Integer, default=0)
+
+class SpentReceipt(Base):
+    __tablename__ = "spent_receipts"
+    id:               Mapped[int]        = mapped_column(Integer, primary_key=True, autoincrement=True)
+    nonce:            Mapped[str]        = mapped_column(String, unique=True, index=True)
+    spent_at:         Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)

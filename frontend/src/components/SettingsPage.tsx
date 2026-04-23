@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Trash2, AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
+import { Trash2, AlertTriangle, CheckCircle2, Loader2, Key } from "lucide-react";
 import { api } from "../lib/api";
+import { startRegistration } from "@simplewebauthn/browser";
 
 const KEY_DEFS = [
   {
@@ -53,13 +54,32 @@ export function SettingsPage() {
 
   async function handleTest(id: string) {
     setTesting(id);
-    await new Promise(r => setTimeout(r, 1400));
-    setTesting(null);
-    setTested(t => ({ ...t, [id]: true }));
-    setTimeout(() => setTested(t => ({ ...t, [id]: false })), 4000);
-    toast.success(`${id} — connection verified`, {
-      description: "API responded with a valid authentication token.",
-    });
+    try {
+      const status = await api.getConfigStatus();
+      const keyMap: Record<string, string> = {
+        OLLAMA_API_URL: "ollama",
+        ABUSEIPDB_API_KEY: "abuseipdb",
+        VIRUSTOTAL_API_KEY: "virustotal",
+      };
+      const isConnected = status[keyMap[id] as keyof typeof status] ?? false;
+      setTested(t => ({ ...t, [id]: !!isConnected }));
+      setTimeout(() => setTested(t => ({ ...t, [id]: false })), 4000);
+      if (isConnected) {
+        toast.success(`${id} — connection verified`, {
+          description: "Backend confirmed the service is reachable.",
+        });
+      } else {
+        toast.error(`${id} — not connected`, {
+          description: "Service is unreachable or key is not configured in .env.",
+        });
+      }
+    } catch {
+      toast.error(`${id} — backend unreachable`, {
+        description: "Could not reach the OmniWatch server on port 8080.",
+      });
+    } finally {
+      setTesting(null);
+    }
   }
 
   function handleSave(id: string) {
@@ -92,6 +112,35 @@ export function SettingsPage() {
       toast.error("Reset failed — check backend logs.");
     } finally {
       setWiping(false);
+    }
+  }
+
+  async function handleRegisterKey() {
+    try {
+      const username = prompt("Enter your username for FIDO2 enrollment:", "admin");
+      if (!username) return;
+
+      const optsRes = await fetch("http://localhost:8080/api/webauthn/register-options", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username })
+      });
+      const options = await optsRes.json();
+      
+      const authResp = await startRegistration({ optionsJSON: options });
+      
+      const verifyRes = await fetch("http://localhost:8080/api/webauthn/register-verify", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, response: authResp })
+      });
+      const verifyData = await verifyRes.json();
+      
+      if (verifyData?.status === "ok") {
+         toast.success("Security Key Enrolled", { description: "You can now cryptographically sign remediations." });
+      } else {
+         toast.error("Enrollment failed.");
+      }
+    } catch(e) {
+      toast.error(`FIDO2 error: ${e}`);
     }
   }
 
@@ -228,6 +277,29 @@ export function SettingsPage() {
           </div>
         </section>
       )}
+
+      {/* FIDO2 Configuration */}
+      <section>
+        <SectionLabel>Proof of Oversight (FIDO2)</SectionLabel>
+        <div className="rounded-xl border border-blue-800/40 bg-blue-950/20 p-4">
+          <div className="flex items-center justify-between">
+            <div className="max-w-[70%]">
+              <p className="text-sm font-medium text-blue-300">Hardware Security Key Enrollment</p>
+              <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
+                Enroll a WebAuthn/FIDO2 authenticator (YubiKey, Windows Hello, TouchID) to cryptographically sign remediation orders. 
+                Phase 3 compliance requirement.
+              </p>
+            </div>
+            <button
+               onClick={handleRegisterKey}
+               className="btn-glow flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold
+                          bg-blue-900/40 text-blue-300 border border-blue-700/50 hover:bg-blue-800/60 transition-all"
+            >
+              <Key className="w-4 h-4" /> Enroll Token
+            </button>
+          </div>
+        </div>
+      </section>
 
       {/* ── Danger Zone ──────────────────────────────────────────────────── */}
       <section>

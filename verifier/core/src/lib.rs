@@ -48,70 +48,38 @@ impl ThreatCategory {
 // ── Triggered rule bit-flags ─────────────────────────────────────────────────
 
 pub mod rules {
-    /// bytes/s > 1 MB — DoS / DDoS indicator
-    pub const HIGH_RATE: u32         = 1 << 0;
-    /// Destination port matches a known attack-targeted service
-    pub const KNOWN_TARGET_PORT: u32 = 1 << 1;
-    /// Port 21/22 + packet_count > 50 — FTP/SSH brute force
-    pub const BRUTE_FORCE: u32       = 1 << 2;
-    /// flow_duration < 100 ms AND packet_count <= 2 — stealth probe
-    pub const RAPID_PROBE: u32       = 1 << 3;
-    /// Port 53 + UDP + bytes/s > 100 KB — DNS amplification
-    pub const DNS_AMPLIFICATION: u32 = 1 << 4;
-    /// direction=outbound AND bytes/s > 500 KB AND duration > 5 s — data theft
-    pub const EXFIL_PATTERN: u32     = 1 << 5;
-    /// Port 3389 + packet_count > 30 — RDP brute force
-    pub const RDP_BRUTE: u32         = 1 << 6;
-    /// Confidence was capped at 50% (sparse sourcetype — matches Python validator)
-    pub const CONFIDENCE_CAPPED: u32 = 1 << 7;
+    /// Function code is considered an illegal or unauthorized command (e.g., FC 05)
+    pub const ILLEGAL_FUNCTION_CODE: u32 = 1 << 0;
+    /// The specified unit ID is not authorized for control commands
+    pub const UNAUTHORIZED_UNIT: u32 = 1 << 1;
+    /// The payload length does not match the MBAP header length (Buffer anomaly)
+    pub const BUFFER_ANOMALY: u32 = 1 << 2;
 }
 
 // ── Network telemetry input ──────────────────────────────────────────────────
 
-/// One processed network flow record sent to the zkVM for evaluation.
-///
-/// Maps to the CIC-IDS-2017 / OmniWatch `CicidsEvent` schema:
-///   src_ip, dst_ip, dst_port, protocol, flow_duration, flow_bytes_s
-///
-/// Floats are avoided inside the zkVM (non-deterministic across platforms).
-/// `flow_bytes_s_milli` = actual_bytes_per_second × 1000 (fixed-point, 3dp).
+/// One processed Modbus network flow record sent to the zkVM for evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NetworkTelemetry {
+pub struct ModbusTelemetry {
     /// Source IPv4 as big-endian octets.
     pub src_ip: [u8; 4],
     /// Destination IPv4 as big-endian octets.
     pub dst_ip: [u8; 4],
-    /// Destination port (0–65535).
-    pub dst_port: u16,
-    /// IANA protocol number: 6=TCP, 17=UDP, 1=ICMP.
-    pub protocol: u8,
-    /// Flow duration in microseconds (avoids f64 in guest).
-    pub flow_duration_us: u64,
-    /// Bytes per second × 1000 (fixed-point; 8_500_000 = 8.5 KB/s).
-    pub flow_bytes_s_milli: u64,
-    /// Total packets observed in this flow.
-    pub packet_count: u32,
-    /// 0 = inbound toward our network, 1 = outbound from it.
-    pub direction: u8,
-    /// Sourcetype tag from the originating log source.
-    /// 0=simulated/unknown, 1=suricata, 2=sysmon, 3=pan_traffic, 4=zeek
-    /// Used to apply confidence capping (mirrors Python validator.py).
-    pub sourcetype: u8,
+    /// Modbus Transaction Identifier.
+    pub transaction_id: u16,
+    /// Protocol Identifier (normally 0 for Modbus).
+    pub protocol_id: u16,
+    /// Length field from the MBAP header.
+    pub length: u16,
+    /// Unit Identifier (slave address).
+    pub unit_id: u8,
+    /// Modbus Function Code.
+    pub function_code: u8,
+    /// Modbus PDU Data payload.
+    pub data: Vec<u8>,
 }
 
-impl NetworkTelemetry {
-    /// Returns actual bytes/s as an integer (truncated).
-    #[inline]
-    pub fn bytes_per_sec(&self) -> u64 {
-        self.flow_bytes_s_milli / 1000
-    }
-
-    /// Returns flow duration in whole milliseconds.
-    #[inline]
-    pub fn duration_ms(&self) -> u64 {
-        self.flow_duration_us / 1000
-    }
-
+impl ModbusTelemetry {
     /// src_ip formatted as a dotted-decimal string.
     pub fn src_ip_str(&self) -> String {
         format!(

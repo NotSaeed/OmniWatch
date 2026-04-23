@@ -146,8 +146,8 @@ async def upload_csv(file: UploadFile = File(...)):
     Streams the file to disk in 1 MB chunks to avoid memory pressure,
     then triggers ingestion in the background.
     """
-    if not (file.filename or "").lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Only .csv files are accepted")
+    if not (file.filename or "").lower().endswith((".csv", ".json")):
+        raise HTTPException(status_code=400, detail="Only .csv or .json files are accepted")
 
     _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     dest = _UPLOAD_DIR / file.filename
@@ -181,10 +181,10 @@ async def _cicids_ingest_task(path: Path) -> None:
         loop    = asyncio.get_running_loop()
         db      = _db_path()
 
-        # ── Step 1: Ingest CSV ────────────────────────────────────────────────
+        # ── Step 1: Ingest CSV / JSON ─────────────────────────────────────────
         summary = await loop.run_in_executor(None, ingest_cicids_to_db, path, db)
         await manager.broadcast({"type": "cicids_ingest_complete", "filename": path.name, "data": summary})
-        logger.info("CSV ingestion complete: %s — %d rows", path.name, summary.get("inserted", 0))
+        logger.info("Ingestion complete: %s — %d rows", path.name, summary.get("inserted", 0))
 
         # ── Step 2: SOAR playbooks ────────────────────────────────────────────
         fired = await loop.run_in_executor(None, run_soar_on_ingest, db, path.name)
@@ -221,6 +221,14 @@ async def _cicids_ingest_task(path: Path) -> None:
             })
             logger.info("CTI enrichment complete for %s — %d IPs processed",
                         path.name, len(cti_results))
+
+        # Relink Kill Chain Narrative: Send scan_complete so the UI triggers the narrative
+        await manager.broadcast({
+            "type": "scan_complete",
+            "scan_run_id": path.name,
+            "alerts_generated": summary.get("inserted", 0),
+            "playbooks_fired": len(fired),
+        })
 
     except Exception as exc:
         logger.error("CSV ingestion failed for %s: %s", path.name, exc)
@@ -294,6 +302,7 @@ async def analyze_incident(event: dict = Body(...)):
         "ai_generated": result["ai_generated"],
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
         "cti":          cti,
+        "rag_chunks":   result.get("rag_chunks"),
     }
 
 
@@ -424,12 +433,43 @@ async def config_status():
 @router.get("/api/scan/{scan_run_id}/narrative")
 async def get_narrative(scan_run_id: str, session: AsyncSession = Depends(get_session)):
     from narrative.narrator import generate_kill_chain_narrative
+    from ingestion.cicids_parser import query_cicids_events
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
 
-    alerts = await get_alerts(session, limit=200, offset=0)
-    scan_alerts = [a for a in alerts if a.scan_run_id == scan_run_id]
-    if not scan_alerts:
+    alerts_list = []
+    
+    # 1. Try alerts table (legacy trigger-scan route)
+    db_alerts = await get_alerts(session, limit=200, offset=0)
+    db_scan = [a for a in db_alerts if getattr(a, "scan_run_id", None) == scan_run_id]
+    alerts_list.extend(db_scan)
+    
+    # 2. Try cicids_events table (CSV upload route)
+    if not alerts_list:
+        cicids = query_cicids_events(_db_path(), limit=500)
+        file_events = [e for e in cicids if e.get("source_file") == scan_run_id and e.get("severity") in ("CRITICAL", "HIGH")]
+        for e in file_events:
+            try:
+                ts = datetime.fromisoformat(e.get('ingested_at')) if e.get('ingested_at') else datetime.now(tz=timezone.utc)
+            except Exception:
+                ts = datetime.now(tz=timezone.utc)
+            pseudo_alert = SimpleNamespace(
+                timestamp=ts,
+                severity=e.get("severity"),
+                category=e.get("category", "MALWARE"),
+                source_ip=e.get("src_ip"),
+                affected_asset=f"{e.get('dst_ip')}:{e.get('dst_port')}",
+                mitre_techniques=[],
+                confidence=0.9,
+                ai_reasoning=f"Identified {e.get('label')} behavior matching anomaly profiling.",
+                playbook_triggered=None
+            )
+            alerts_list.append(pseudo_alert)
+
+    if not alerts_list:
         raise HTTPException(status_code=404, detail="No alerts found for this scan run")
-    narrative = await generate_kill_chain_narrative(scan_run_id, scan_alerts)
+        
+    narrative = await generate_kill_chain_narrative(scan_run_id, alerts_list)
     return narrative.model_dump()
 
 
