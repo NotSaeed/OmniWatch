@@ -7,23 +7,36 @@ const SEVERITIES: Severity[] = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
 interface Props {
   stats: DashboardStats | undefined;
   cicidsStats: CicidsStats | undefined;
+  botsTactics?: any[];
 }
 
-export function SeverityChart({ stats, cicidsStats }: Props) {
-  // Prefer AI alert counts; fall back to CIC-IDS severity counts
+export function SeverityChart({ stats, cicidsStats, botsTactics }: Props) {
+  // Prefer AI alert counts; fall back to CIC-IDS severity counts, then BOTS tactics
   const aiTotal = SEVERITIES.reduce((s, k) => s + (stats?.by_severity?.[k] ?? 0), 0);
-  const source  = aiTotal > 0 ? "ai" : "cicids";
+  const cicidsTotal = SEVERITIES.reduce((s, k) => s + (cicidsStats?.by_severity?.[k] ?? 0), 0);
+  
+  let source: "ai" | "cicids" | "bots" = "ai";
+  if (aiTotal === 0) {
+    if (cicidsTotal > 0) source = "cicids";
+    else if (botsTactics && botsTactics.length > 0) source = "bots";
+  }
 
   const data = SEVERITIES
-    .map(s => ({
-      name:  s,
-      value: source === "ai"
-        ? (stats?.by_severity?.[s] ?? 0)
-        : (cicidsStats?.by_severity?.[s] ?? 0),
-    }))
+    .map(s => {
+      let value = 0;
+      if (source === "ai") value = stats?.by_severity?.[s] ?? 0;
+      else if (source === "cicids") value = cicidsStats?.by_severity?.[s] ?? 0;
+      else if (source === "bots" && botsTactics) {
+        // Map tactics to severity for visualization
+        if (s === "CRITICAL") value = botsTactics.find(t => t.tactic === "Initial Access")?.count ?? 0;
+        if (s === "HIGH")     value = botsTactics.find(t => t.tactic === "Execution")?.count ?? 0;
+        if (s === "MEDIUM")   value = botsTactics.find(t => t.tactic === "Discovery")?.count ?? 0;
+      }
+      return { name: s, value };
+    })
     .filter(d => d.value > 0);
 
-  const subtitle = source === "cicids" && data.length > 0 ? "Network telemetry" : "AI alerts";
+  const subtitle = source === "bots" ? "BOTSv3 Heuristics" : source === "cicids" ? "Network telemetry" : "AI alerts";
 
   if (data.length === 0) {
     return (

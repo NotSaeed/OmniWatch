@@ -1,0 +1,25 @@
+Apr 16 19:25:23 app-srv-03 kernel: [UFW BLOCK] IN=eth0 SRC=203.0.113.42 DST=10.0.1.1 PROTO=TCP SPT=43571 DPT=22 SYN
+Apr 16 19:25:23 app-srv-03 sshd[6422]: error: maximum authentication attempts exceeded for admin from 185.220.101.55 port 42152 ssh2 [preauth]
+Apr 16 19:25:23 app-srv-03 sshd[3413]: error: maximum authentication attempts exceeded for admin from 185.220.101.55 port 49317 ssh2 [preauth]
+Apr 16 19:25:23 app-srv-03 sshd[3832]: error: maximum authentication attempts exceeded for admin from 185.220.101.55 port 63885 ssh2 [preauth]
+Apr 16 19:25:23 app-srv-03 sshd[7421]: error: maximum authentication attempts exceeded for admin from 185.220.101.55 port 53794 ssh2 [preauth]
+Apr 16 19:25:23 db-srv-02 kernel[4444]: normal operation — heartbeat ok
+Apr 16 19:25:23 web-srv-01 mysqld[1120]: normal operation — heartbeat ok
+Apr 16 19:25:23 db-srv-02 mysqld[9950]: normal operation — heartbeat ok
+Apr 16 19:25:23 app-srv-03 mysqld[305]: normal operation — heartbeat ok
+Apr 16 19:25:23 db-srv-02 apache2[9913]: normal operation — heartbeat ok
+Apr 16 19:25:23 web-srv-01 systemd[6484]: normal operation — heartbeat ok
+Apr 16 19:25:23 workstation-14 kernel[7110]: normal operation — heartbeat ok
+Apr 16 19:25:23 db-srv-02 mysqld[2863]: normal operation — heartbeat ok
+Apr 16 19:25:23 app-srv-03 sshd[9771]: normal operation — heartbeat ok
+Apr 16 19:25:23 db-srv-02 kernel[5712]: normal operation — heartbeat ok
+Apr 16 19:25:23 workstation-14 mysqld[4255]: normal operation — heartbeat ok
+Apr 16 19:25:23 workstation-14 sshd[6418]: normal operation — heartbeat ok
+Apr 16 19:25:23 db-srv-02 nginx[5026]: normal operation — heartbeat ok
+Apr 16 19:25:23 workstation-14 nginx[1636]: normal operation — heartbeat ok
+Apr 16 19:25:23 app-srv-03 cron[2286]: normal operation — heartbeat ok
+Apr 16 19:25:23 app-srv-03 kernel[764]: normal operation — heartbeat ok
+Apr 16 19:25:23 app-srv-03 cron[6581]: normal operation — heartbeat ok
+Apr 16 19:25:23 web-srv-01 nginx[7640]: normal operation — heartbeat ok
+Apr 16 19:25:23 dc-01 cron[5466]: normal operation — heartbeat ok
+Apr 16 19:25:23 dc-01 apache2[8213]: normal operation — heartbeat ok

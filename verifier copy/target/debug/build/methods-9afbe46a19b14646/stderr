@@ -1,0 +1,7 @@
+[build.rs] rustup path: C:\Users\alshy\.cargo\bin\rustup.exe
+[build.rs] nightly toolchain root: Some("C:\\Users\\alshy\\.rustup\\toolchains\\nightly-x86_64-pc-windows-msvc")
+[build.rs] CARGO env: Ok("C:\\Users\\alshy\\.rustup\\toolchains\\stable-x86_64-pc-windows-msvc\\bin\\cargo.exe")
+[build.rs] RUSTUP_TOOLCHAIN env: Ok("stable-x86_64-pc-windows-msvc")
+   Compiling verifier-core v0.1.0 (C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\core)
+   Compiling verifier-guest v0.1.0 (C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\methods\guest)
+    Finished `release` profile [optimized] target(s) in 2.73s

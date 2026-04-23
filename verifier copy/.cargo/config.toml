@@ -1,0 +1,11 @@
+# RISC Zero on Windows + MSVC requires C++20 for designated initializers
+# in risc0-circuit-keccak-sys.  The cc crate reads CXXFLAGS_<target> and
+# appends it to every C++ compiler invocation for that target.
+[env]
+CXXFLAGS_x86_64_pc_windows_msvc = "/std:c++latest /EHsc /DNOMINMAX"
+
+# The RISC Zero FRI/STARK prover (via risc0-circuit-rv32im-sys / poolstl)
+# spawns C++ threads that need a large stack.  /STACK sets the default
+# reservation for ALL threads in the process (256 MiB), including C++ ones.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:268435456"]

@@ -1,0 +1,10 @@
+[package]
+name    = "verifier-core"
+version = "0.1.0"
+edition = "2021"
+
+# Deliberately minimal — this crate must compile for both x86-64 (host)
+# and riscv32im-risc0-zkvm-elf (guest).  No std-only deps allowed.
+[dependencies]
+serde   = { workspace = true }
+bincode = { workspace = true }

@@ -62,31 +62,20 @@ async def generate_incident_report(event: dict, cti: dict | None = None) -> dict
     Returns {"report": str, "ai_generated": bool} so the UI can indicate source.
     Falls back to a deterministic local report if Ollama is unavailable.
     """
-    from ingestion.rag.retriever import retrieve
-    
-    query_text = f"Threat: {event.get('label', '')} on port {event.get('dst_port', '')} protocol {event.get('protocol', '')}"
-    if event.get("data_hex"):
-        query_text += f"\nModbus Payload Hex: {event.get('data_hex')}"
-    chunks, max_score = retrieve(query_text)
-    
-    if chunks is None:
-        logger.info(f"No grounding available for '{query_text}' (score: {max_score:.2f}). Bypassing LLM.")
-        return {"report": _fallback_report(event), "ai_generated": False, "rag_chunks": None}
-
-    prompt = _build_prompt(event, cti, chunks)
+    prompt = _build_prompt(event, cti)
     client = get_client()
 
     try:
         text = await client.generate_report(prompt, _SYSTEM_PROMPT)
         if text:
-            return {"report": text, "ai_generated": True, "rag_chunks": chunks}
-        return {"report": _fallback_report(event), "ai_generated": False, "rag_chunks": chunks}
+            return {"report": text, "ai_generated": True}
+        return {"report": _fallback_report(event), "ai_generated": False}
     except OllamaUnavailableError as exc:
         logger.warning("Ollama unavailable for IR report: %s — using local fallback", exc)
-        return {"report": _fallback_report(event), "ai_generated": False, "rag_chunks": chunks}
+        return {"report": _fallback_report(event), "ai_generated": False}
 
 
-def _build_prompt(event: dict, cti: dict | None = None, chunks: list[str] | None = None) -> str:
+def _build_prompt(event: dict, cti: dict | None = None) -> str:
     def _fmt(v) -> str:
         return str(v) if v not in (None, "", "None") else "N/A"
 
@@ -111,10 +100,20 @@ def _build_prompt(event: dict, cti: dict | None = None, chunks: list[str] | None
         f"| Protocol         | {_fmt(event.get('protocol'))} |",
         f"| Flow Duration    | {duration_s or _fmt(event.get('flow_duration'))} |",
         f"| Flow Bytes/s     | {_fmt(event.get('flow_bytes_s'))} |",
-        f"| Modbus Payload   | `{_fmt(event.get('data_hex', 'N/A'))}` |",
         f"| Source File      | {_fmt(event.get('source_file'))} |",
         f"| Ingested At      | {_fmt(event.get('ingested_at'))} |",
     ]
+
+    # Add raw text for BOTSv3/unstructured logs
+    raw = event.get("raw_text")
+    if raw:
+        lines += [
+            "",
+            "**Raw Event Telemetry:**",
+            "```text",
+            str(raw)[:1500], # Cap to avoid context overflow
+            "```"
+        ]
 
     if cti:
         lines += ["", "---", "**Cyber Threat Intelligence (pre-fetched):**", ""]
@@ -136,11 +135,6 @@ def _build_prompt(event: dict, cti: dict | None = None, chunks: list[str] | None
         if mitre:
             tech_str = ", ".join(f"{t['id']} ({t['tactic']})" for t in mitre)
             lines.append(f"- **MITRE ATT&CK** — {tech_str}")
-
-    if chunks:
-        lines += ["", "---", "**Facility Reference Context (RAG Mappings):**", ""]
-        for i, chunk in enumerate(chunks, 1):
-            lines.append(f"Document {i}:\n{chunk}\n")
 
     lines += ["", "Write the full Incident Response Report following the structure in your instructions."]
     return "\n".join(lines)

@@ -193,7 +193,6 @@ export function LogExplorer() {
   const [analyzingLog,   setAnalyzingLog]   = useState<CicidsLog | null>(null);
   const [incidentReport, setIncidentReport] = useState<string | null>(null);
   const [ctiData,        setCtiData]        = useState<CtiEnrichment | null>(null);
-  const [ragChunks,      setRagChunks]      = useState<string[] | null>(null);
   const [aiGenerated,    setAiGenerated]    = useState<boolean>(true);
 
   const [activeSearch,   setActiveSearch]   = useState("");
@@ -213,12 +212,26 @@ export function LogExplorer() {
   });
   const actionedIps = useMemo(() => new Set(actionedIpsRaw), [actionedIpsRaw]);
 
+  const { data: botsv3Dashboard } = useQuery({ 
+    queryKey: ["botsv3-dashboard"], 
+    queryFn: api.getBotsv3Dashboard 
+  });
+
+  // Determine which dataset to show
+  const isBotsOnly = (stats?.total === 0 || !stats) && (botsv3Dashboard?.has_data);
+  const activeDataset = isBotsOnly ? "botsv3" : "cicids";
+
   const { data: logs = [], isFetching } = useQuery({
-    queryKey: ["cicids-logs", activeSearch, activeSeverity, activeLabel, offset],
-    queryFn: () => api.getCicidsLogs({
-      search: activeSearch, severity: activeSeverity,
-      label: activeLabel, limit: PAGE_SIZE, offset,
-    }),
+    queryKey: ["logs", activeDataset, activeSearch, activeSeverity, activeLabel, offset],
+    queryFn: () => {
+      if (activeDataset === "botsv3") {
+        return api.getBotsv3Logs({ search: activeSearch, limit: PAGE_SIZE, offset });
+      }
+      return api.getCicidsLogs({
+        search: activeSearch, severity: activeSeverity,
+        label: activeLabel, limit: PAGE_SIZE, offset,
+      });
+    },
     placeholderData: prev => prev,
   });
 
@@ -245,10 +258,9 @@ export function LogExplorer() {
     setCtiData(null);
     setAiGenerated(true);
     try {
-      const { report, ai_generated, cti, rag_chunks } = await api.analyzeIncident(log);
+      const { report, ai_generated, cti } = await api.analyzeIncident(log);
       setCtiData(cti ?? null);
       setIncidentReport(report);
-      setRagChunks(rag_chunks ?? null);
       setAiGenerated(ai_generated ?? false);
     } catch {
       setIncidentReport(
@@ -263,7 +275,9 @@ export function LogExplorer() {
 
   // Distinguish "still fetching on first load" from "data loaded but empty"
   const statsReady = !statsLoading && stats !== undefined;
-  const isEmpty    = statsReady && stats.total === 0;
+  const hasCicids  = statsReady && stats.total > 0;
+  const hasBots    = botsv3Dashboard?.has_data;
+  const isEmpty    = !hasCicids && !hasBots;
 
   return (
     <div className="flex flex-col h-full">
@@ -462,9 +476,8 @@ export function LogExplorer() {
           log={analyzingLog}
           report={incidentReport}
           cti={ctiData}
-          ragChunks={ragChunks}
           aiGenerated={aiGenerated}
-          onClose={() => { setAnalyzingLog(null); setIncidentReport(null); setCtiData(null); setRagChunks(null); }}
+          onClose={() => { setAnalyzingLog(null); setIncidentReport(null); setCtiData(null); }}
         />
       )}
     </div>
@@ -497,14 +510,18 @@ function LogRow({
   isActioned:  boolean;
 }) {
   const style    = LOG_ROW_STYLE[log.severity] ?? LOG_ROW_STYLE["INFO"];
-  const isAttack = log.severity !== "INFO";
+  // For BOTSv3, we allow analyzing any row to help understand the raw text.
+  // For CIC-IDS, we stick to attacks only to reduce noise.
+  const isBots    = log.source_file === "botsv3_export";
+  const isAttack  = log.severity !== "INFO";
+  const canAnalyze = isBots || isAttack;
 
   return (
     <tr
-      onClick={() => isAttack && onAnalyze(log)}
-      title={isAttack ? "Click to open AI Incident Report" : undefined}
+      onClick={() => canAnalyze && onAnalyze(log)}
+      title={canAnalyze ? "Click to open AI Incident Report" : undefined}
       className={`transition-all ${style} ${
-        isAttack
+        canAnalyze
           ? "cursor-pointer hover:brightness-125 hover:scale-[1.001]"
           : "opacity-40 cursor-default"
       }`}

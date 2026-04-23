@@ -38,3 +38,9 @@ data/monitor/
 # Rust
 verifier/target/
 **/*.pdb
+
+data copy/
+data/
+
+node_modules copy/
+node_modules/

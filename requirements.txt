@@ -31,5 +31,6 @@ python-dotenv==1.1.0
 sentence-transformers==3.3.1
 numpy==1.26.4
 
-# FIDO2/WebAuthn library (Hardware ECDSA Support)
-webauthn==2.0.0
+# FIDO2 / WebAuthn Relying Party (Sprint 3)
+fido2>=1.1.0
+cryptography>=42.0.0

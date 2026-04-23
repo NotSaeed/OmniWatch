@@ -24,9 +24,10 @@ const LABEL_MITRE: Record<string, string[]> = {
 interface Props {
   alerts: Alert[];
   cicidsStats?: CicidsStats;
+  botsTactics?: any[];
 }
 
-export function MitreHeatmap({ alerts, cicidsStats }: Props) {
+export function MitreHeatmap({ alerts, cicidsStats, botsTactics }: Props) {
   const freq = new Map<string, number>();
 
   // Primary: count from AI alerts
@@ -36,7 +37,7 @@ export function MitreHeatmap({ alerts, cicidsStats }: Props) {
     }
   }
 
-  // Fallback: derive from CIC-IDS label counts when no AI alerts have MITRE data
+  // Fallback 1: derive from CIC-IDS label counts
   if (freq.size === 0 && cicidsStats?.by_label) {
     for (const [label, count] of Object.entries(cicidsStats.by_label)) {
       const techniques = LABEL_MITRE[label];
@@ -44,6 +45,22 @@ export function MitreHeatmap({ alerts, cicidsStats }: Props) {
       for (const tid of techniques) {
         freq.set(tid, (freq.get(tid) ?? 0) + count);
       }
+    }
+  }
+
+  // Fallback 2: BOTS tactics (map to generic technique IDs)
+  if (freq.size === 0 && botsTactics) {
+    const TACTIC_MAP: Record<string, string> = {
+      "Initial Access": "T1190",
+      "Execution": "T1059",
+      "Discovery": "T1046",
+      "Command and Control": "T1071",
+      "Credential Access": "T1110",
+      "Lateral Movement": "T1021",
+    };
+    for (const bt of botsTactics) {
+      const tid = TACTIC_MAP[bt.tactic] || "T1000";
+      freq.set(tid, (freq.get(tid) ?? 0) + bt.count);
     }
   }
 

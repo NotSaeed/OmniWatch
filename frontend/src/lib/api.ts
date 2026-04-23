@@ -41,6 +41,9 @@ export const api = {
   getDatasetStats: () =>
     http.get("/dataset-stats").then(r => r.data),
 
+  getBotsv3Dashboard: () =>
+    http.get("/botsv3/dashboard").then(r => r.data),
+
   // ── CIC-IDS-2017 upload & logs ───────────────────────────────────────────
   uploadCsv: (file: File, onProgress?: (pct: number) => void) => {
     const form = new FormData();
@@ -62,6 +65,10 @@ export const api = {
     limit?: number; offset?: number;
   }) => http.get<CicidsLog[]>("/cicids/logs", { params }).then(r => r.data),
 
+  getBotsv3Logs: (params?: {
+    search?: string; limit?: number; offset?: number;
+  }) => http.get<CicidsLog[]>("/botsv3/logs", { params }).then(r => r.data),
+
   getCicidsStats: () =>
     http.get<CicidsStats>("/cicids/stats").then(r => r.data),
 
@@ -69,7 +76,7 @@ export const api = {
     http.post<IrReport>("/cicids/analyze", null, { params: { source_file: sourceFile } }).then(r => r.data),
 
   analyzeIncident: (log: CicidsLog) =>
-    http.post<{ report: string; ai_generated: boolean; generated_at: string; cti: CtiEnrichment; rag_chunks?: string[] }>(
+    http.post<{ report: string; ai_generated: boolean; generated_at: string; cti: CtiEnrichment }>(
       "/analyze-incident", log,
     ).then(r => r.data),
 
@@ -99,20 +106,41 @@ export const api = {
       "/system/reset",
     ).then(r => r.data),
 
-  // ── WebAuthn / FIDO2 ─────────────────────────────────────────────────────
-  webauthn: {
-    registerOptions: (username: string) =>
-      http.post("/webauthn/register-options", { username }).then(r => r.data),
-      
-    registerVerify: (username: string, response: any) =>
-      http.post<{ status: string }>("/webauthn/register-verify", { username, response }).then(r => r.data),
-      
-    authOptions: (username: string, nonce: string) =>
-      http.post("/webauthn/auth-options", { username, nonce }).then(r => r.data),
-      
-    authVerify: (username: string, nonce: string, response: any, receipt: any, target_ip?: string, label?: string) =>
-      http.post<{ status: string; message: string }>("/webauthn/auth-verify", 
-        { username, nonce, response, receipt, target_ip, label }
-      ).then(r => r.data),
-  }
+  // ── Firewall audit ──────────────────────────────────────────────────────────
+  getFirewallProof: (ruleId: number) =>
+    http.get(`/firewall/proof/${ruleId}`).then(r => r.data),
+
+  // ── Autonomous Breach Containment ────────────────────────────────────────────
+  toggleAbc: (enabled: boolean) =>
+    http.post<{ enabled: boolean; processed_count: number; confidence_threshold: number }>(
+      `/abc/toggle?enabled=${enabled}`,
+    ).then(r => r.data),
+
+  getAbcStatus: () =>
+    http.get<{ enabled: boolean; processed_count: number; confidence_threshold: number }>(
+      "/abc/status",
+    ).then(r => r.data),
+
+  // ── Trust Chain / Sprint 5 ──────────────────────────────────────────────
+  generateStarkProof: (recordId: number) =>
+    http.post<{ success: boolean; receipt_b64: string }>(`/edge/prove/${recordId}`).then(r => r.data),
+
+  fido2SignBegin: (receiptB64: string, mockFido2 = true) =>
+    http.post<{ session_id: string; options: any; mock_fido2?: boolean }>(
+      "/auth/sign/begin",
+      { user_id: "analyst-01", stark_receipt_b64: receiptB64, mock_fido2: mockFido2 },
+    ).then(r => r.data),
+
+  verifyRemediation: (payload: {
+    session_id: string;
+    stark_receipt_b64: string;
+    assertion_response: Record<string, unknown>;
+    mock_fido2?: boolean;
+    src_ip?: string;
+  }) =>
+    http.post<{
+      authorized: boolean; nonce: string;
+      is_threat: boolean; category: string; confidence_pct: number;
+      triggered_rules: number; credential_id: string; new_sign_count: number;
+    }>("/verify-remediation", payload).then(r => r.data),
 };

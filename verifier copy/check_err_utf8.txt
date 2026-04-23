@@ -1,0 +1,335 @@
+﻿cargo :    Compiling windows-sys 
+v0.61.2
+At line:1 char:1
++ cargo check > check_err.txt 
+2>&1; cat check_err.txt
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotS 
+   pecified: (   Compiling window  
+  s-sys v0.61.2:String) [], Remo   
+ teException
+    + FullyQualifiedErrorId : Nati 
+   veCommandError
+ 
+   Compiling serde_derive v1.0.228
+   Compiling synstructure v0.13.2
+   Compiling zerovec-derive v0.11.3
+   Compiling displaydoc v0.2.5
+   Compiling tracing-attributes 
+v0.1.31
+   Compiling thiserror-impl v2.0.18
+   Compiling bytemuck_derive v1.8.1
+   Compiling zeroize_derive v1.4.3
+    Checking ppv-lite86 v0.2.21
+   Compiling num_enum_derive v0.7.6
+    Checking ahash v0.8.12
+   Compiling toml_edit 
+v0.25.11+spec-1.1.0
+   Compiling stability v0.2.1
+   Compiling rustls v0.23.38
+   Compiling derive_more-impl 
+v2.1.1
+   Compiling futures-macro v0.3.32
+   Compiling http v1.4.0
+    Checking rand_chacha v0.3.1
+    Checking crossbeam-utils 
+v0.8.21
+    Checking rand v0.8.6
+    Checking zeroize v1.8.2
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling proc-macro-crate 
+v3.5.0
+    Checking itertools v0.10.5
+   Compiling futures-util v0.3.32
+   Compiling num-bigint v0.3.3
+   Compiling utf8_iter v1.0.4
+    Checking futures-core v0.3.32
+   Compiling rustls-pki-types 
+v1.14.0
+   Compiling http-body v1.0.1
+    Checking bytemuck v1.23.1
+   Compiling borsh-derive v1.6.1
+    Checking crossbeam-epoch 
+v0.9.18
+    Checking nvtx v1.3.0
+   Compiling 
+enum-ordinalize-derive v4.3.2
+    Checking tracing v0.1.44
+    Checking thiserror v2.0.18
+   Compiling percent-encoding 
+v2.3.2
+   Compiling radium v0.7.0
+   Compiling untrusted v0.9.0
+    Checking crossbeam-deque v0.8.6
+   Compiling ring v0.17.14
+    Checking ark-std v0.5.0
+    Checking hashbrown v0.14.5
+    Checking mio v1.2.0
+    Checking socket2 v0.6.3
+   Compiling icu_normalizer_data 
+v2.2.0
+    Checking num-bigint v0.4.6
+   Compiling icu_properties_data 
+v2.2.0
+   Compiling ark-serialize-derive 
+v0.5.0
+    Checking puffin v0.19.1
+   Compiling matrixmultiply v0.3.10
+   Compiling try-lock v0.2.5
+   Compiling enum-ordinalize v4.3.2
+   Compiling zerofrom v0.1.7
+    Checking cpufeatures v0.2.17
+    Checking tap v1.0.1
+   Compiling yoke v0.8.2
+    Checking arrayvec v0.7.6
+   Compiling tower-service v0.3.3
+    Checking futures-sink v0.3.32
+    Checking risc0-core v2.0.0
+    Checking wyz v0.5.1
+    Checking sha2 v0.10.9
+   Compiling want v0.3.1
+   Compiling zerovec v0.11.6
+   Compiling zerotrie v0.2.4
+   Compiling educe v0.6.0
+    Checking rayon-core v1.13.0
+    Checking num_enum v0.7.6
+   Compiling rustc_version v0.4.1
+   Compiling httparse v1.10.1
+    Checking blake2 v0.10.6
+   Compiling ark-ff-asm v0.5.0
+   Compiling addchain v0.2.1
+    Checking itertools v0.13.0
+    Checking ark-serialize v0.5.0
+   Compiling atomic-waker v1.1.2
+    Checking funty v2.0.0
+    Checking litemap v0.8.2
+   Compiling crc32fast v1.5.0
+    Checking tinystr v0.8.3
+   Compiling potential_utf v0.1.5
+   Compiling rustls-webpki 
+v0.103.12
+    Checking rawpointer v0.2.1
+   Compiling dirs-sys v0.5.0
+   Compiling tempfile v3.27.0
+   Compiling directories v6.0.0
+   Compiling icu_locale_core v2.2.0
+   Compiling icu_collections v2.2.0
+    Checking writeable v0.6.3
+    Checking ryu v1.0.23
+   Compiling anyhow v1.0.102
+   Compiling risc0-build-kernel 
+v2.0.1
+   Compiling ark-ff-macros v0.5.0
+    Checking serde v1.0.228
+   Compiling tokio v1.52.1
+    Checking bitvec v1.0.1
+   Compiling ff_derive v0.13.1
+   Compiling risc0-sys v1.5.0
+    Checking bytes v1.11.1
+   Compiling heapless v0.7.17
+    Checking rayon v1.12.0
+   Compiling icu_provider v2.2.0
+    Checking risc0-zkvm-platform 
+v2.2.2
+   Compiling form_urlencoded v1.2.2
+   Compiling libc v0.2.185
+   Compiling sync_wrapper v1.0.2
+    Checking spin v0.9.8
+    Checking num-complex v0.4.6
+   Compiling zerocopy v0.8.48
+   Compiling risc0-zkp v2.0.3
+   Compiling zmij v1.0.21
+   Compiling icu_properties v2.2.0
+   Compiling icu_normalizer v2.2.0
+    Checking hashbrown v0.17.0
+   Compiling libm v0.2.16
+    Checking equivalent v1.0.2
+    Checking simd-adler32 v0.3.9
+   Compiling tower-layer v0.3.3
+   Compiling ipnet v2.12.0
+   Compiling base64 v0.22.1
+    Checking indexmap v2.14.0
+    Checking borsh v1.6.1
+    Checking derive_more v2.1.1
+   Compiling webpki-roots v1.0.7
+    Checking hash32 v0.2.1
+    Checking semver v1.0.28
+    Checking ark-ff v0.5.0
+    Checking slab v0.4.12
+   Compiling windows_x86_64_msvc 
+v0.48.5
+    Checking ff v0.13.1
+    Checking hex-literal v0.4.1
+   Compiling bitflags v2.11.1
+   Compiling ident_case v1.0.1
+   Compiling fnv v1.0.7
+    Checking adler2 v2.0.1
+   Compiling idna_adapter v1.2.1
+    Checking futures-io v0.3.32
+    Checking futures-task v0.3.32
+    Checking hex v0.4.3
+   Compiling idna v1.1.0
+   Compiling strsim v0.11.1
+   Compiling iri-string v0.7.12
+   Compiling serde_json v1.0.149
+   Compiling thiserror v1.0.69
+    Checking allocator-api2 v0.2.21
+   Compiling serde_urlencoded 
+v0.7.1
+   Compiling darling_core v0.20.11
+    Checking ndarray v0.16.1
+    Checking miniz_oxide v0.8.9
+   Compiling url v2.5.8
+    Checking hashbrown v0.15.5
+   Compiling futures-executor 
+v0.3.32
+    Checking cobs v0.3.0
+   Compiling http-body-util v0.1.3
+   Compiling aho-corasick v1.1.4
+   Compiling thiserror-impl v1.0.69
+    Checking itertools v0.11.0
+   Compiling regex-syntax v0.8.10
+   Compiling heck v0.5.0
+   Compiling hyper v1.9.0
+   Compiling tower v0.5.3
+   Compiling tokio-rustls v0.26.4
+   Compiling malachite-nz v0.4.22
+   Compiling tower-http v0.6.8
+    Checking malachite-base v0.4.22
+   Compiling hyper-util v0.1.20
+    Checking postcard v1.1.3
+   Compiling futures v0.3.32
+    Checking flate2 v1.1.9
+    Checking lazy_static v1.5.0
+   Compiling 
+risc0-circuit-recursion-sys v3.0.0
+    Checking futures-channel 
+v0.3.32
+    Checking tracing-subscriber 
+v0.2.25
+   Compiling darling_macro v0.20.11
+    Checking elf v0.7.4
+    Checking keccak v0.1.6
+   Compiling regex-automata v0.4.14
+   Compiling pkg-config v0.3.33
+   Compiling darling v0.20.11
+    Checking windows-targets 
+v0.48.5
+   Compiling hyper-rustls v0.27.9
+    Checking serde_spanned v0.6.9
+    Checking toml_datetime v0.6.11
+   Compiling reqwest v0.12.28
+   Compiling lzma-sys v0.1.20
+    Checking getrandom v0.4.2
+   Compiling 
+proc-macro2-diagnostics v0.10.1
+    Checking winnow v0.7.15
+   Compiling camino v1.2.2
+    Checking bumpalo v3.20.2
+    Checking toml_write v0.1.2
+   Compiling zip v2.4.2
+   Compiling typeid v1.0.3
+    Checking static_assertions 
+v1.1.0
+    Checking fastrand v2.4.1
+    Checking zopfli v0.8.3
+    Checking ark-poly v0.5.0
+    Checking ark-relations v0.5.1
+    Checking twox-hash v1.6.3
+    Checking ark-snark v0.5.1
+    Checking windows-sys v0.48.0
+   Compiling derive_builder_core 
+v0.20.2
+    Checking merlin v3.0.0
+   Compiling strum_macros v0.26.4
+    Checking ark-ec v0.5.0
+   Compiling downloader v0.2.8
+   Compiling regex v1.12.3
+    Checking toml_edit v0.22.27
+   Compiling 
+risc0-circuit-rv32im-sys v3.0.0
+   Compiling 
+risc0-circuit-keccak-sys v3.0.0
+    Checking hashlink v0.9.1
+   Compiling derivative v2.2.0
+   Compiling 
+ark-crypto-primitives-macros v0.5.0
+   Compiling derive_more v0.99.20
+    Checking encoding_rs v0.8.35
+    Checking arraydeque v0.5.1
+   Compiling no_std_strings v0.1.3
+    Checking option-ext v0.2.0
+   Compiling erased-serde v0.4.10
+   Compiling 
+lazy-regex-proc_macros v3.6.0
+   Compiling cpp_demangle v0.4.5
+   Compiling include_bytes_aligned 
+v0.1.4
+   Compiling 
+risc0-circuit-recursion v3.0.1
+   Compiling risc0-zkos-v1compat 
+v2.2.2
+    Checking risc0-binfmt v2.0.3
+    Checking toml v0.8.23
+    Checking dirs-sys v0.4.1
+    Checking strum v0.26.3
+   Compiling derive_builder_macro 
+v0.20.2
+    Checking yaml-rust2 v0.9.0
+    Checking lazy-regex v3.6.0
+    Checking tokio-util v0.7.18
+    Checking cargo-platform v0.1.9
+   Compiling enum-map-derive 
+v0.17.0
+   Compiling itertools v0.14.0
+   Compiling typetag v0.2.21
+   Compiling methods v0.1.0 (C:\Use
+rs\alshy\OneDrive\Desktop\OmniWatch
+\verifier\methods)
+    Checking cargo_metadata v0.19.2
+    Checking rzup v0.4.1
+   Compiling duplicate v2.0.1
+    Checking ark-crypto-primitives 
+v0.5.0
+    Checking ruzstd v0.6.0
+    Checking derive_builder v0.20.2
+    Checking enum-map v2.7.3
+    Checking dirs v5.0.1
+    Checking ark-groth16 v0.5.0
+    Checking ark-bn254 v0.5.0
+    Checking bincode v1.3.3
+   Compiling maybe-async v0.2.10
+    Checking object v0.35.0
+   Compiling typetag-impl v0.2.21
+   Compiling num-derive v0.4.2
+    Checking gimli v0.29.0
+    Checking memmap2 v0.9.10
+    Checking auto_ops v0.3.0
+    Checking fallible-iterator 
+v0.3.0
+    Checking bit-vec v0.8.0
+    Checking rustc-demangle v0.1.27
+    Checking inventory v0.3.24
+    Checking ringbuffer v0.15.0
+    Checking downcast-rs v1.2.1
+    Checking docker-generate v0.1.3
+    Checking rrs-lib v0.1.0
+   Compiling prost-derive v0.13.5
+    Checking risc0-build v2.3.2
+    Checking risc0-groth16 v2.0.3
+    Checking bonsai-sdk v1.4.2
+    Checking verifier-core v0.1.0 (
+C:\Users\alshy\OneDrive\Desktop\Omn
+iWatch\verifier\core)
+    Checking prost v0.13.5
+    Checking addr2line v0.22.0
+    Checking malachite-q v0.4.22
+    Checking malachite-float 
+v0.4.22
+    Checking malachite v0.4.22
+    Checking xz2 v0.1.7
+    Checking risc0-circuit-rv32im 
+v3.0.1
+    Checking risc0-circuit-keccak 
+v3.0.1

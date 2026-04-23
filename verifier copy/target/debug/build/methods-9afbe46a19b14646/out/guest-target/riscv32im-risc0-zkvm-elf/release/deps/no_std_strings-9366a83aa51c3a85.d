@@ -1,0 +1,9 @@
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\methods-9afbe46a19b14646\out\guest-target\riscv32im-risc0-zkvm-elf\release\deps\no_std_strings-9366a83aa51c3a85.d: C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\no_std_strings-0.1.3\src\lib.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\no_std_strings-0.1.3\src\zero_terminated.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\no_std_strings-0.1.3\src\tiny_internal.rs
+
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\methods-9afbe46a19b14646\out\guest-target\riscv32im-risc0-zkvm-elf\release\deps\libno_std_strings-9366a83aa51c3a85.rlib: C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\no_std_strings-0.1.3\src\lib.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\no_std_strings-0.1.3\src\zero_terminated.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\no_std_strings-0.1.3\src\tiny_internal.rs
+
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\methods-9afbe46a19b14646\out\guest-target\riscv32im-risc0-zkvm-elf\release\deps\libno_std_strings-9366a83aa51c3a85.rmeta: C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\no_std_strings-0.1.3\src\lib.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\no_std_strings-0.1.3\src\zero_terminated.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\no_std_strings-0.1.3\src\tiny_internal.rs
+
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\no_std_strings-0.1.3\src\lib.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\no_std_strings-0.1.3\src\zero_terminated.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\no_std_strings-0.1.3\src\tiny_internal.rs:

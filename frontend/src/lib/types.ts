@@ -79,18 +79,19 @@ export interface NarrativeReport {
 // ── CIC-IDS-2017 ──────────────────────────────────────────────────────────────
 
 export interface CicidsLog {
-  id:            number;
+  id:            number | string;
   ingested_at:   string;
   src_ip:        string | null;
   dst_ip:        string | null;
   dst_port:      number | null;
-  protocol:      number | null;
+  protocol:      number | string | null;
   label:         string;
   severity:      Severity;
   category:      string;
   flow_duration: number | null;
   flow_bytes_s:  number | null;
   source_file:   string;
+  raw_text?:     string;
 }
 
 export interface CicidsStats {
@@ -193,4 +194,8 @@ export type WsMessage =
   | { type: "monitor_file_detected"; filename: string; path: string }
   | { type: "cicids_playbook_fired";    data: CicidsPlaybookLog }
   | { type: "cti_enrichment_started";  filename: string; ip_count: number }
-  | { type: "cti_enrichment_complete"; filename: string; results: Record<string, unknown> };
+  | { type: "cti_enrichment_complete"; filename: string; results: Record<string, unknown> }
+  | { type: "firewall_block";   data: { src_ip: string; category: string; confidence_pct: number; id: number; blocked_at: string; nonce_prefix: string } }
+  | { type: "abc_proving";      data: { record_id: number; src_ip: string } }
+  | { type: "abc_auto_block";   data: { record_id: number; src_ip: string; fc: number; firewall_rule_id: number; category: string; confidence_pct: number } }
+  | { type: "abc_low_confidence"; data: { record_id: number; confidence_pct: number } };

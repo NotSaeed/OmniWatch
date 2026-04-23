@@ -1,0 +1,10 @@
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\methods-9afbe46a19b14646\out\guest-target\riscv32im-risc0-zkvm-elf\release\deps\derive_more-a74be3fea4ed8928.d: C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\lib.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\add.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\ops.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\fmt.rs
+
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\methods-9afbe46a19b14646\out\guest-target\riscv32im-risc0-zkvm-elf\release\deps\libderive_more-a74be3fea4ed8928.rlib: C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\lib.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\add.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\ops.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\fmt.rs
+
+C:\Users\alshy\OneDrive\Desktop\OmniWatch\verifier\target\debug\build\methods-9afbe46a19b14646\out\guest-target\riscv32im-risc0-zkvm-elf\release\deps\libderive_more-a74be3fea4ed8928.rmeta: C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\lib.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\add.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\ops.rs C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\fmt.rs
+
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\lib.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\add.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\ops.rs:
+C:\Users\alshy\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\derive_more-2.1.1\src\fmt.rs:

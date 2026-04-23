@@ -1,0 +1,3 @@
+# Raspberry Pi 4 Edge Node — Minimal Dependencies
+# These are installed on the Pi 4 only (not the workstation).
+requests>=2.31.0

@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.websocket import manager
@@ -76,28 +76,47 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)):
     """
     from ingestion.cicids_parser import get_cicids_stats
 
-    ai_stats   = await get_dashboard_stats(session)
-    cicids     = get_cicids_stats(_db_path())
-    by_sev     = cicids.get("by_severity", {})
+    ai_stats = await get_dashboard_stats(session)
+    
+    # Run sync DB call in executor
+    loop = asyncio.get_running_loop()
+    cicids = await loop.run_in_executor(None, get_cicids_stats, _db_path())
+    
+    by_sev = cicids.get("by_severity", {})
+    total_events      = cicids.get("total", 0)
+    critical_events   = by_sev.get("CRITICAL", 0)
+    suspicious_events = by_sev.get("HIGH", 0) + by_sev.get("MEDIUM", 0)
+    benign_events     = by_sev.get("INFO", 0)
 
-    # ROI metrics — each detected CRITICAL threat saves ~45 min of manual triage
-    # Calculated from raw CIC-IDS event count so the figure is non-zero as soon
-    # as a CSV is uploaded, regardless of whether the AI scan has run yet.
-    # (0.75 h × $50/h average SOC analyst rate)
-    cicids_critical = by_sev.get("CRITICAL", 0)
-    hours_saved     = round(cicids_critical * 0.75, 1)
-    cost_saved      = round(hours_saved * 50, 2)
+    # If CIC-IDS is empty, check BOTSv3 for basic volume display
+    if total_events == 0:
+        def _get_bots_counts():
+            db = _db_path()
+            try:
+                conn = sqlite3.connect(db, timeout=20.0)
+                cur = conn.cursor()
+                cur.execute("SELECT count(*) FROM raw_events")
+                total = cur.fetchone()[0]
+                cur.execute("SELECT count(*) FROM raw_events WHERE severity_hint = 'high' OR severity_hint = 'critical'")
+                crit = cur.fetchone()[0]
+                conn.close()
+                return total, crit
+            except:
+                return 0, 0
+        
+        bots_total, bots_crit = await loop.run_in_executor(None, _get_bots_counts)
+        if bots_total > 0:
+            total_events = bots_total
+            critical_events = bots_crit
 
     return {
         **ai_stats,
-        # Raw ingested event counts (cicids_events table)
-        "total_events":       cicids.get("total", 0),
-        "critical_events":    by_sev.get("CRITICAL", 0),
-        "suspicious_events":  by_sev.get("HIGH", 0) + by_sev.get("MEDIUM", 0),
-        "benign_events":      by_sev.get("INFO", 0),
-        # Business ROI
-        "hours_saved":        hours_saved,
-        "cost_saved":         cost_saved,
+        "total_events":       total_events,
+        "critical_events":    critical_events,
+        "suspicious_events":  suspicious_events,
+        "benign_events":      benign_events,
+        "hours_saved":        ai_stats.get("hours_saved", 0),
+        "cost_saved":         ai_stats.get("cost_saved", 0),
     }
 
 
@@ -115,18 +134,28 @@ async def trigger_scan(dataset: str = "simulated"):
 
 @router.post("/api/ingest")
 async def ingest_dataset(file_path: str):
-    """Ingest a BOTSv3 JSON export file by absolute server path."""
+    """
+    Ingest a BOTSv3 dataset export file by absolute server path.
+    Supports .json (Splunk NDJSON) and .csv formats.
+    """
     path = Path(file_path)
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
-    if path.suffix.lower() != ".json":
-        raise HTTPException(status_code=400, detail="File must be a .json NDJSON export")
+    
+    ext = path.suffix.lower()
+    if ext == ".json":
+        from ingestion.botsv3_parser import ingest_botsv3_to_db
+        summary = await asyncio.get_running_loop().run_in_executor(
+            None, ingest_botsv3_to_db, path, _db_path()
+        )
+    elif ext == ".csv":
+        from ingestion.botsv3_csv_parser import ingest_botsv3_csv_to_db
+        summary = await asyncio.get_running_loop().run_in_executor(
+            None, ingest_botsv3_csv_to_db, path, _db_path()
+        )
+    else:
+        raise HTTPException(status_code=400, detail="File must be .json (NDJSON) or .csv")
 
-    from ingestion.botsv3_parser import ingest_botsv3_to_db
-
-    summary = await asyncio.get_running_loop().run_in_executor(
-        None, ingest_botsv3_to_db, path, _db_path()
-    )
     await manager.broadcast({"type": "ingest_complete", "data": summary.model_dump()})
     return summary.model_dump()
 
@@ -139,29 +168,92 @@ async def dataset_stats():
 
 # ── CIC-IDS-2017: CSV upload ───────────────────────────────────────────────────
 
+def _detect_dataset_type(path: Path) -> str:
+    """
+    Peek at CSV headers to decide if it's CIC-IDS-2017 or BOTSv3.
+    """
+    try:
+        import csv
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+            reader = csv.reader(f)
+            headers = [h.strip().lower() for h in next(reader)]
+            # BOTSv3/Splunk specific
+            if any(h in headers for h in ("sourcetype", "_raw", "raw_text", "protocol_stack", "splunk_server")):
+                return "botsv3"
+            # CIC-IDS specific
+            if "label" in headers or "flow duration" in headers:
+                return "cicids"
+    except Exception:
+        pass
+    return "cicids"  # fallback
+
+
 @router.post("/api/upload")
-async def upload_csv(file: UploadFile = File(...)):
+async def upload_csv(
+    file: UploadFile = File(...),
+    dataset_type: str = Form("auto")  # Default to auto-detection
+):
     """
-    Upload a CIC-IDS-2017 CSV file (supports 200MB+).
-    Streams the file to disk in 1 MB chunks to avoid memory pressure,
-    then triggers ingestion in the background.
+    Upload a CSV log file (supports 200MB+).
+    Automatically detects BOTSv3 vs CIC-IDS-2017 based on headers.
     """
-    if not (file.filename or "").lower().endswith((".csv", ".json")):
-        raise HTTPException(status_code=400, detail="Only .csv or .json files are accepted")
+    if not (file.filename or "").lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only .csv files are accepted through this endpoint")
 
     _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     dest = _UPLOAD_DIR / file.filename
 
     # Stream-write — never loads the full file into memory
+    bytes_written = 0
+    last_log      = 0
     with dest.open("wb") as fh:
         while True:
             chunk = await file.read(1024 * 1024)   # 1 MB read window
             if not chunk:
                 break
             fh.write(chunk)
+            bytes_written += len(chunk)
+            # Log every 50MB
+            if bytes_written - last_log > 50 * 1024 * 1024:
+                logger.info("Upload progress for %s: %d MB", file.filename, bytes_written // (1024*1024))
+                last_log = bytes_written
 
-    asyncio.create_task(_cicids_ingest_task(dest))
-    return {"status": "ingestion_started", "filename": file.filename, "path": str(dest)}
+    logger.info("Upload complete: %s (%d MB)", file.filename, bytes_written // (1024*1024))
+
+    # Auto-detect if not explicitly forced
+    final_type = dataset_type
+    if final_type == "auto" or final_type == "cicids":
+        final_type = _detect_dataset_type(dest)
+
+    if final_type == "botsv3":
+        logger.info(f"Starting background BOTSv3 ingestion for {dest.name}")
+        asyncio.create_task(_botsv3_ingest_task(dest))
+    else:
+        logger.info(f"Starting background CIC-IDS ingestion for {dest.name}")
+        asyncio.create_task(_cicids_ingest_task(dest))
+        
+    return {
+        "status": "ingestion_started", 
+        "filename": file.filename, 
+        "path": str(dest), 
+        "detected_type": final_type
+    }
+
+
+async def _botsv3_ingest_task(path: Path) -> None:
+    """Background task for BOTSv3 CSV ingestion."""
+    from ingestion.botsv3_csv_parser import ingest_botsv3_csv_to_db
+    
+    await manager.broadcast({"type": "ingest_started", "filename": path.name, "source": "upload"})
+    try:
+        summary = await asyncio.get_running_loop().run_in_executor(
+            None, ingest_botsv3_csv_to_db, path, _db_path()
+        )
+        await manager.broadcast({"type": "ingest_complete", "data": summary.model_dump()})
+        logger.info("BOTSv3 CSV ingestion complete: %s — %d rows", path.name, summary.total_stored)
+    except Exception as exc:
+        logger.error("BOTSv3 CSV ingestion failed for %s: %s", path.name, exc)
+        await manager.broadcast({"type": "ingest_error", "filename": path.name, "error": str(exc)})
 
 
 async def _cicids_ingest_task(path: Path) -> None:
@@ -181,10 +273,10 @@ async def _cicids_ingest_task(path: Path) -> None:
         loop    = asyncio.get_running_loop()
         db      = _db_path()
 
-        # ── Step 1: Ingest CSV / JSON ─────────────────────────────────────────
+        # ── Step 1: Ingest CSV ────────────────────────────────────────────────
         summary = await loop.run_in_executor(None, ingest_cicids_to_db, path, db)
         await manager.broadcast({"type": "cicids_ingest_complete", "filename": path.name, "data": summary})
-        logger.info("Ingestion complete: %s — %d rows", path.name, summary.get("inserted", 0))
+        logger.info("CSV ingestion complete: %s — %d rows", path.name, summary.get("inserted", 0))
 
         # ── Step 2: SOAR playbooks ────────────────────────────────────────────
         fired = await loop.run_in_executor(None, run_soar_on_ingest, db, path.name)
@@ -221,14 +313,6 @@ async def _cicids_ingest_task(path: Path) -> None:
             })
             logger.info("CTI enrichment complete for %s — %d IPs processed",
                         path.name, len(cti_results))
-
-        # Relink Kill Chain Narrative: Send scan_complete so the UI triggers the narrative
-        await manager.broadcast({
-            "type": "scan_complete",
-            "scan_run_id": path.name,
-            "alerts_generated": summary.get("inserted", 0),
-            "playbooks_fired": len(fired),
-        })
 
     except Exception as exc:
         logger.error("CSV ingestion failed for %s: %s", path.name, exc)
@@ -276,6 +360,63 @@ async def cicids_stats():
     return get_cicids_stats(_db_path())
 
 
+@router.get("/api/botsv3/dashboard")
+async def botsv3_dashboard(session: AsyncSession = Depends(get_session)):
+    """Retrieve dynamic heuristic-driven dashboard data based on BOTSv3."""
+    from services.botsv3_heuristic import analyze_botsv3_telemetry
+    return await analyze_botsv3_telemetry(session)
+
+
+@router.get("/api/botsv3/logs")
+async def botsv3_logs(
+    search:   str = None,
+    limit:    int = 100,
+    offset:   int = 0,
+):
+    """
+    Fetch raw BOTSv3 events, mapped to the canonical log schema for the UI.
+    """
+    def _fetch():
+        db = _db_path()
+        conn = sqlite3.connect(db, timeout=60.0)
+        cur = conn.cursor()
+        
+        query = "SELECT event_id, timestamp, sourcetype, src_ip, dst_ip, dst_port, severity_hint, raw_text FROM raw_events"
+        params = []
+        
+        if search:
+            query += " WHERE src_ip LIKE ? OR dst_ip LIKE ? OR raw_text LIKE ?"
+            params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+            
+        query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        cur.execute(query, params)
+        rows = cur.fetchall()
+        
+        results = []
+        for r in rows:
+            results.append({
+                "id":             r[0],
+                "timestamp":      r[1],
+                "label":          r[2].upper(),
+                "severity":       (r[6] or "INFO").upper(),
+                "src_ip":         r[3],
+                "dst_ip":         r[4],
+                "dst_port":       r[5],
+                "protocol":       "TCP" if r[5] else "N/A",
+                "source_file":    "botsv3_export",
+                "flow_duration":  0,
+                "flow_bytes_s":   0,
+                "raw_text":       r[7],
+            })
+        conn.close()
+        return results
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _fetch)
+
+
 # ── Tier 2 per-alert AI analysis ──────────────────────────────────────────────
 
 @router.post("/api/analyze-incident")
@@ -302,7 +443,6 @@ async def analyze_incident(event: dict = Body(...)):
         "ai_generated": result["ai_generated"],
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
         "cti":          cti,
-        "rag_chunks":   result.get("rag_chunks"),
     }
 
 
@@ -381,6 +521,9 @@ async def system_reset():
             "alerts",
             "scan_runs",
             "playbook_log",
+            "raw_events",
+            "firewall_status",
+            "spent_receipts",
         ):
             try:
                 cur.execute(f"DELETE FROM {table}")   # noqa: S608 — table names are hardcoded
@@ -433,43 +576,12 @@ async def config_status():
 @router.get("/api/scan/{scan_run_id}/narrative")
 async def get_narrative(scan_run_id: str, session: AsyncSession = Depends(get_session)):
     from narrative.narrator import generate_kill_chain_narrative
-    from ingestion.cicids_parser import query_cicids_events
-    from types import SimpleNamespace
-    from datetime import datetime, timezone
 
-    alerts_list = []
-    
-    # 1. Try alerts table (legacy trigger-scan route)
-    db_alerts = await get_alerts(session, limit=200, offset=0)
-    db_scan = [a for a in db_alerts if getattr(a, "scan_run_id", None) == scan_run_id]
-    alerts_list.extend(db_scan)
-    
-    # 2. Try cicids_events table (CSV upload route)
-    if not alerts_list:
-        cicids = query_cicids_events(_db_path(), limit=500)
-        file_events = [e for e in cicids if e.get("source_file") == scan_run_id and e.get("severity") in ("CRITICAL", "HIGH")]
-        for e in file_events:
-            try:
-                ts = datetime.fromisoformat(e.get('ingested_at')) if e.get('ingested_at') else datetime.now(tz=timezone.utc)
-            except Exception:
-                ts = datetime.now(tz=timezone.utc)
-            pseudo_alert = SimpleNamespace(
-                timestamp=ts,
-                severity=e.get("severity"),
-                category=e.get("category", "MALWARE"),
-                source_ip=e.get("src_ip"),
-                affected_asset=f"{e.get('dst_ip')}:{e.get('dst_port')}",
-                mitre_techniques=[],
-                confidence=0.9,
-                ai_reasoning=f"Identified {e.get('label')} behavior matching anomaly profiling.",
-                playbook_triggered=None
-            )
-            alerts_list.append(pseudo_alert)
-
-    if not alerts_list:
+    alerts = await get_alerts(session, limit=200, offset=0)
+    scan_alerts = [a for a in alerts if a.scan_run_id == scan_run_id]
+    if not scan_alerts:
         raise HTTPException(status_code=404, detail="No alerts found for this scan run")
-        
-    narrative = await generate_kill_chain_narrative(scan_run_id, alerts_list)
+    narrative = await generate_kill_chain_narrative(scan_run_id, scan_alerts)
     return narrative.model_dump()
 
 
