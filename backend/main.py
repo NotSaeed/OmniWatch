@@ -20,6 +20,7 @@ from api.verify_route import router as verify_router
 from api.bincode_route import router as edge_router
 from api.prove_route import router as prove_router
 from api.abc_routes import router as abc_router
+from api.ingestion_route import router as ingestion_router, init_pipeline_db
 from db.database import create_tables
 import starlette.formparsers
 import sys
@@ -65,6 +66,7 @@ async def lifespan(_app: FastAPI):
     _db = get_db_path()
     ensure_cicids_tables(_db)
     ensure_soar_tables(_db)
+    init_pipeline_db(_db)          # telemetry_alerts + pipeline_sessions + hash_chain_receipts
     logger.info("Database tables ready")
 
     # APScheduler
@@ -114,11 +116,12 @@ app.add_middleware(
 )
 
 app.include_router(router)
-app.include_router(auth_router)      # /api/auth/* — FIDO2 registration + signing ceremony
-app.include_router(verify_router)    # /api/verify-remediation — dual-factor gate
-app.include_router(edge_router)      # /api/edge/* — Sprint 4 bincode ingestion from Pi 4
-app.include_router(prove_router)     # /api/edge/prove/* — STARK proof generation
-app.include_router(abc_router)       # /api/abc/* — Autonomous Breach Containment
+app.include_router(auth_router)       # /api/auth/* — FIDO2 registration + signing ceremony
+app.include_router(verify_router)     # /api/verify-remediation — dual-factor gate
+app.include_router(edge_router)       # /api/edge/* — Sprint 4 bincode ingestion from Pi 4
+app.include_router(prove_router)      # /api/edge/prove/* — STARK proof generation
+app.include_router(abc_router)        # /api/abc/* — Autonomous Breach Containment
+app.include_router(ingestion_router)  # /api/upload-telemetry + /api/pipeline/*
 
 
 @app.get("/health")

@@ -33,17 +33,26 @@ export interface TrustChainProps {
   nodes?: TrustNode[];
   edges?: TrustEdge[];
   onNodeClick?: (nodeId: string) => void;
+  /**
+   * When provided, the DAG switches to pipeline mode and renders the
+   * telemetry processing chain:
+   *   Raw Telemetry → Fixed-Point Scale → zkVM Execution → Hash: [first 8 chars]
+   *
+   * All four nodes are shown as "verified" and the last node's sublabel is
+   * bound to the real SHA-256 chain_tip_hash from the completed session.
+   */
+  pipelineHash?: string;
 }
 
-// ── Default pipeline ─────────────────────────────────────────────────────────
+// ── Default pipeline (zkVM proof flow — used when no pipelineHash is set) ─────
 
 export const DEFAULT_NODES: TrustNode[] = [
-  { id: "edge",    label: "Edge Telemetry",    sublabel: "Pi 4 · Zeek + ICSNPP",       state: "verified",  position: [-4, 1.5, 0] },
-  { id: "bincode", label: "Bincode Payload",   sublabel: "61-byte serialized struct",   state: "verified",  position: [-1.5, 1.5, 0] },
-  { id: "zkvm",    label: "STARK Proof",       sublabel: "RISC Zero zkVM (Machine)",    state: "verifying", position: [1.5, 1.5, 0] },
-  { id: "fido2",   label: "FIDO2 Signature",   sublabel: "ECDSA · WebAuthn (Human)",    state: "pending",   position: [1.5, -1, 0] },
-  { id: "gate",    label: "Verification Gate", sublabel: "Dual-factor: Machine + Human", state: "pending", position: [4.5, 0.25, 0] },
-  { id: "action",  label: "Remediation",       sublabel: "Network isolation · Firewall", state: "pending",  position: [7, 0.25, 0] },
+  { id: "edge",    label: "Edge Telemetry",    sublabel: "Pi 4 · Zeek + ICSNPP",        state: "verified",  position: [-4, 1.5, 0] },
+  { id: "bincode", label: "Bincode Payload",   sublabel: "61-byte serialized struct",    state: "verified",  position: [-1.5, 1.5, 0] },
+  { id: "zkvm",    label: "STARK Proof",       sublabel: "RISC Zero zkVM (Machine)",     state: "verifying", position: [1.5, 1.5, 0] },
+  { id: "fido2",   label: "FIDO2 Signature",   sublabel: "ECDSA · WebAuthn (Human)",     state: "pending",   position: [1.5, -1, 0] },
+  { id: "gate",    label: "Verification Gate", sublabel: "Dual-factor: Machine + Human", state: "pending",   position: [4.5, 0.25, 0] },
+  { id: "action",  label: "Remediation",       sublabel: "Network isolation · Firewall", state: "pending",   position: [7, 0.25, 0] },
 ];
 
 const DEFAULT_EDGES: TrustEdge[] = [
@@ -52,6 +61,55 @@ const DEFAULT_EDGES: TrustEdge[] = [
   { from: "zkvm",    to: "gate" },
   { from: "fido2",   to: "gate" },
   { from: "gate",    to: "action" },
+];
+
+// ── Pipeline-mode nodes (shown when pipelineHash is provided) ─────────────────
+//
+// Visually maps the telemetry ingestion pipeline:
+//   Raw Telemetry → Fixed-Point Scaling → zkVM Execution → Hash Committed
+//
+// All four nodes are derived from the real completed pipeline session.
+// The "hash" node sublabel shows the first 8 hex chars of the chain_tip_hash —
+// the SHA-256 that binds every alert in the session to its source telemetry.
+
+function buildPipelineNodes(hash: string): TrustNode[] {
+  const short = hash.length >= 8 ? hash.substring(0, 8) : hash;
+  return [
+    {
+      id:       "raw",
+      label:    "Raw Telemetry",
+      sublabel: "Network flows · CSV · Edge capture",
+      state:    "verified",
+      position: [-4.5, 0, 0],
+    },
+    {
+      id:       "scale",
+      label:    "Fixed-Point Scale",
+      sublabel: "Python → fp14 · Integer arithmetic",
+      state:    "verified",
+      position: [-1.5, 0, 0],
+    },
+    {
+      id:       "zkvm_exec",
+      label:    "zkVM Execution",
+      sublabel: "RISC Zero · 11 rules · No float",
+      state:    "verified",
+      position: [1.5, 0, 0],
+    },
+    {
+      id:       "hash_commit",
+      label:    "Hash Committed",
+      sublabel: `SHA-256 · ${short}…`,
+      state:    "verified",
+      position: [4.5, 0, 0],
+    },
+  ];
+}
+
+const PIPELINE_EDGES: TrustEdge[] = [
+  { from: "raw",       to: "scale" },
+  { from: "scale",     to: "zkvm_exec" },
+  { from: "zkvm_exec", to: "hash_commit" },
 ];
 
 // ── Color mapping ────────────────────────────────────────────────────────────
@@ -323,7 +381,12 @@ function TrustChainFallback2D({ nodes }: { nodes: TrustNode[] }) {
 export function TrustChainDAG({
   nodes = DEFAULT_NODES,
   edges = DEFAULT_EDGES,
+  pipelineHash,
 }: TrustChainProps) {
+  // When a completed pipeline session hash is available, switch to pipeline
+  // mode: override nodes/edges with the real processing chain.
+  const activeNodes = pipelineHash ? buildPipelineNodes(pipelineHash) : nodes;
+  const activeEdges = pipelineHash ? PIPELINE_EDGES                   : edges;
   const [webglOk, setWebglOk] = useState(true);
   const [errored, setErrored] = useState(false);
 
@@ -336,17 +399,19 @@ export function TrustChainDAG({
   }, []);
 
   if (!webglOk || errored) {
-    return <TrustChainFallback2D nodes={nodes} />;
+    return <TrustChainFallback2D nodes={activeNodes} />;
   }
+
+  const subtitle = pipelineHash
+    ? `Telemetry pipeline · Hash: ${pipelineHash.substring(0, 16)}… · Drag to rotate`
+    : "Spatial DAG · Dual-verification pipeline · Drag to rotate";
 
   return (
     <div className="relative w-full" style={{ height: 380 }}>
       {/* Title */}
       <div className="absolute top-3 left-4 z-10 pointer-events-none">
         <h3 className="text-xs font-bold text-white/90 tracking-wide">Cryptographic Trust Chain</h3>
-        <p className="text-[10px] mt-0.5" style={{ color: "#6b6e80" }}>
-          Spatial DAG · Dual-verification pipeline · Drag to rotate
-        </p>
+        <p className="text-[10px] mt-0.5" style={{ color: "#6b6e80" }}>{subtitle}</p>
       </div>
 
       {/* Legend */}
@@ -371,7 +436,7 @@ export function TrustChainDAG({
           onError={() => setErrored(true)}
         >
           <Suspense fallback={null}>
-            <TrustChainScene nodes={nodes} edges={edges} />
+            <TrustChainScene nodes={activeNodes} edges={activeEdges} />
           </Suspense>
         </Canvas>
       </div>

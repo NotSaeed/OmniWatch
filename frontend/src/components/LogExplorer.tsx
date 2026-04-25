@@ -1,10 +1,28 @@
 import { useState, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Shield, Search, FolderOpen, BarChart2, TrendingUp } from "lucide-react";
+import { Shield, Search, FolderOpen } from "lucide-react";
 import { api } from "../lib/api";
 import { LOG_ROW_STYLE, SEVERITY_BADGE } from "../lib/utils";
 import { IncidentReportModal } from "./IncidentReportModal";
-import type { CicidsLog, CicidsStats, CtiEnrichment, IrReport, Severity } from "../lib/types";
+import type { CicidsLog, CicidsStats, CtiEnrichment, IrReport, PipelineAlert, Severity } from "../lib/types";
+
+/** Map a pipeline telemetry_alert row to the CicidsLog shape used by the table. */
+function pipelineAlertToLog(a: PipelineAlert): CicidsLog {
+  return {
+    id:            a.id,
+    ingested_at:   a.ingested_at,
+    src_ip:        a.source_ip,
+    dst_ip:        a.dest_ip,
+    dst_port:      a.dest_port,
+    protocol:      a.protocol,
+    label:         a.label,
+    severity:      a.severity,
+    category:      a.mitre_name ?? a.label,
+    flow_duration: null,
+    flow_bytes_s:  a.bytes_total ?? null,
+    source_file:   a.dataset_type,
+  };
+}
 
 const SEVERITY_OPTIONS: Severity[] = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
 const PAGE_SIZE = 100;
@@ -180,7 +198,12 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function LogExplorer() {
+interface LogExplorerProps {
+  /** When set, switches the data source to telemetry_alerts for this session. */
+  sessionId?: string | null;
+}
+
+export function LogExplorer({ sessionId }: LogExplorerProps) {
   const qc = useQueryClient();
 
   const [search,      setSearch]      = useState("");
@@ -199,9 +222,10 @@ export function LogExplorer() {
   const [activeSeverity, setActiveSeverity] = useState<Severity | "">("");
   const [activeLabel,    setActiveLabel]    = useState("");
 
+  // ── Stats query — session-scoped when a pipeline session is active ──────────
   const { data: stats, isLoading: statsLoading } = useQuery({
-    queryKey:        ["cicids-stats"],
-    queryFn:         api.getCicidsStats,
+    queryKey:        ["cicids-stats", sessionId ?? "legacy"],
+    queryFn:         () => api.getCicidsStats(sessionId),
     refetchInterval: 30_000,
   });
 
@@ -212,19 +236,33 @@ export function LogExplorer() {
   });
   const actionedIps = useMemo(() => new Set(actionedIpsRaw), [actionedIpsRaw]);
 
-  const { data: botsv3Dashboard } = useQuery({ 
-    queryKey: ["botsv3-dashboard"], 
-    queryFn: api.getBotsv3Dashboard 
+  const { data: botsv3Dashboard } = useQuery({
+    queryKey: ["botsv3-dashboard"],
+    queryFn: api.getBotsv3Dashboard,
+    // Don't fetch botsv3 dashboard when viewing a pipeline session
+    enabled: !sessionId,
   });
 
-  // Determine which dataset to show
-  const isBotsOnly = (stats?.total === 0 || !stats) && (botsv3Dashboard?.has_data);
-  const activeDataset = isBotsOnly ? "botsv3" : "cicids";
+  // ── Log rows query — switches data source based on active session ───────────
+  // Pipeline sessions → telemetry_alerts via /api/pipeline/alerts
+  // Legacy CIC-IDS / BOTSv3 → existing cicids_events / raw_events tables
+  const isBotsOnly    = !sessionId && (stats?.total === 0 || !stats) && botsv3Dashboard?.has_data;
+  const legacyDataset = isBotsOnly ? "botsv3" : "cicids";
 
-  const { data: logs = [], isFetching } = useQuery({
-    queryKey: ["logs", activeDataset, activeSearch, activeSeverity, activeLabel, offset],
+  const { data: rawLogs = [], isFetching } = useQuery({
+    queryKey: ["logs", sessionId ?? legacyDataset, activeSearch, activeSeverity, activeLabel, offset],
     queryFn: () => {
-      if (activeDataset === "botsv3") {
+      if (sessionId) {
+        // Pipeline session — read from telemetry_alerts
+        return api.getPipelineAlerts({
+          session_id: sessionId,
+          search:     activeSearch || undefined,
+          severity:   activeSeverity || undefined,
+          limit:      PAGE_SIZE,
+          offset,
+        }).then(rows => rows.map(pipelineAlertToLog));
+      }
+      if (legacyDataset === "botsv3") {
         return api.getBotsv3Logs({ search: activeSearch, limit: PAGE_SIZE, offset });
       }
       return api.getCicidsLogs({
@@ -234,6 +272,8 @@ export function LogExplorer() {
     },
     placeholderData: prev => prev,
   });
+
+  const logs: CicidsLog[] = rawLogs as CicidsLog[];
 
   const runSearch = useCallback(() => {
     setActiveSearch(search);
@@ -274,10 +314,12 @@ export function LogExplorer() {
   }
 
   // Distinguish "still fetching on first load" from "data loaded but empty"
-  const statsReady = !statsLoading && stats !== undefined;
-  const hasCicids  = statsReady && stats.total > 0;
-  const hasBots    = botsv3Dashboard?.has_data;
-  const isEmpty    = !hasCicids && !hasBots;
+  const statsReady  = !statsLoading && stats !== undefined;
+  const hasCicids   = statsReady && stats.total > 0;
+  const hasBots     = !sessionId && botsv3Dashboard?.has_data;
+  // When a pipeline session is active, the explorer always renders the table
+  // (even if 0 alerts) — the "no data" empty state would be misleading.
+  const isEmpty     = !sessionId && !hasCicids && !hasBots;
 
   return (
     <div className="flex flex-col h-full">
@@ -449,7 +491,9 @@ export function LogExplorer() {
             <span className="text-slate-600 font-mono">
               {isFetching
                 ? <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full border border-cyan-600 border-t-transparent animate-spin" />Fetching…</span>
-                : `Rows ${offset + 1}–${offset + logs.length} of ${stats?.total.toLocaleString() ?? "?"}`}
+                : logs.length === 0
+                  ? "No results"
+                  : `Rows ${offset + 1}–${offset + logs.length}${stats?.total ? ` of ${stats.total.toLocaleString()}` : ""}`}
             </span>
             <div className="flex gap-1.5">
               <PaginationBtn
@@ -551,11 +595,12 @@ function LogRow({
       <td className="px-3 py-1.5 text-slate-600 truncate max-w-[100px] text-[10px]">{log.source_file}</td>
       <td className="px-3 py-1.5 text-center">
         {isActioned && (
-          <Shield
-            title="Playbook executed against this IP"
-            className="w-3.5 h-3.5 mx-auto text-emerald-400"
-            style={{ filter: "drop-shadow(0 0 4px rgba(34,197,94,0.55))" }}
-          />
+          <span title="Playbook executed against this IP">
+            <Shield
+              className="w-3.5 h-3.5 mx-auto text-emerald-400"
+              style={{ filter: "drop-shadow(0 0 4px rgba(34,197,94,0.55))" }}
+            />
+          </span>
         )}
       </td>
     </tr>

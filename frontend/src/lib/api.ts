@@ -9,7 +9,10 @@ import type {
   IrReport,
   MonitorStatus,
   NarrativeReport,
+  PipelineAlert,
+  PipelineSession,
   PlaybookLogEntry,
+  SessionStatus,
 } from "./types";
 
 const http = axios.create({ baseURL: "/api" });
@@ -70,8 +73,8 @@ export const api = {
     search?: string; limit?: number; offset?: number;
   }) => http.get<CicidsLog[]>("/botsv3/logs", { params }).then(r => r.data),
 
-  getCicidsStats: () =>
-    http.get<CicidsStats>("/cicids/stats").then(r => r.data),
+  getCicidsStats: (sessionId?: string | null) =>
+    http.get<CicidsStats>("/cicids/stats", { params: sessionId ? { session_id: sessionId } : {} }).then(r => r.data),
 
   generateIrReport: (sourceFile = "") =>
     http.post<IrReport>("/cicids/analyze", null, { params: { source_file: sourceFile } }).then(r => r.data),
@@ -126,6 +129,45 @@ export const api = {
     http.get<{ enabled: boolean; processed_count: number; confidence_threshold: number }>(
       "/abc/status",
     ).then(r => r.data),
+
+  // ── Edge telemetry status ────────────────────────────────────────────────
+  getEdgeStatus: () =>
+    http.get<{
+      connected: boolean;
+      last_heartbeat: number | null;
+      records_received: number;
+      last_record: Record<string, unknown> | null;
+    }>("/edge/status").then(r => r.data),
+
+  // ── Unified telemetry pipeline ───────────────────────────────────────────
+  uploadTelemetry: (file: File, onProgress?: (pct: number) => void) => {
+    const form = new FormData();
+    form.append("file", file);
+    return http.post<{ session_id: string; filename: string; bytes: number; status: string; message: string }>(
+      "/upload-telemetry",
+      form,
+      {
+        headers: { "Content-Type": "multipart/form-data" },
+        onUploadProgress: e => {
+          if (onProgress && e.total) onProgress(Math.round((e.loaded * 100) / e.total));
+        },
+      },
+    ).then(r => r.data);
+  },
+
+  getSessionStatus: (sessionId: string) =>
+    http.get<SessionStatus>(`/sessions/${sessionId}/status`).then(r => r.data),
+
+  getPipelineSession: (sessionId: string) =>
+    http.get<PipelineSession>(`/pipeline/session/${sessionId}`).then(r => r.data),
+
+  getPipelineAlerts: (params?: {
+    session_id?: string; severity?: string; mitre?: string;
+    search?: string; limit?: number; offset?: number;
+  }) => http.get<PipelineAlert[]>("/pipeline/alerts", { params }).then(r => r.data),
+
+  getPipelineSessions: (limit = 20) =>
+    http.get<PipelineSession[]>("/pipeline/sessions", { params: { limit } }).then(r => r.data),
 
   // ── Trust Chain / Sprint 5 ──────────────────────────────────────────────
   generateStarkProof: (recordId: number) =>

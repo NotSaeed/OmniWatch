@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -362,10 +363,47 @@ async def cicids_logs(
 
 
 @router.get("/api/cicids/stats")
-async def cicids_stats():
-    """Aggregate counts by label and severity for the CIC-IDS dashboard widgets."""
+async def cicids_stats(session_id: str = None):
+    """
+    Aggregate counts by label and severity.
+
+    When `session_id` is supplied the query targets `telemetry_alerts`
+    (pipeline sessions) instead of the legacy `cicids_events` table.
+    This makes the dashboard charts react to the active upload session.
+    """
+    db = _db_path()
+
+    if session_id:
+        # Read stats for the active pipeline session from telemetry_alerts.
+        loop = asyncio.get_running_loop()
+
+        def _session_stats():
+            try:
+                conn  = sqlite3.connect(db, timeout=10.0)
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM telemetry_alerts WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()[0]
+                by_label = dict(conn.execute(
+                    "SELECT label, COUNT(*) FROM telemetry_alerts "
+                    "WHERE session_id = ? GROUP BY label ORDER BY COUNT(*) DESC",
+                    (session_id,),
+                ).fetchall())
+                by_severity = dict(conn.execute(
+                    "SELECT severity, COUNT(*) FROM telemetry_alerts "
+                    "WHERE session_id = ? GROUP BY severity",
+                    (session_id,),
+                ).fetchall())
+                conn.close()
+                return {"total": total, "by_label": by_label, "by_severity": by_severity}
+            except Exception as exc:
+                logger.error("cicids_stats (session) DB error:\n%s", exc)
+                raise
+
+        return await loop.run_in_executor(None, _session_stats)
+
     from ingestion.cicids_parser import get_cicids_stats
-    return get_cicids_stats(_db_path())
+    return get_cicids_stats(db)
 
 
 @router.get("/api/botsv3/dashboard")

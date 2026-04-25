@@ -1,6 +1,9 @@
-import type { DashboardStats } from "../lib/types";
+import type { CisoPipelineSummary, DashboardStats } from "../lib/types";
 
-interface Props { stats: DashboardStats | undefined }
+interface Props {
+  stats:        DashboardStats | undefined;
+  pipelineCiso: CisoPipelineSummary | undefined;
+}
 
 type Theme = "neutral" | "red" | "amber" | "green" | "cyan";
 
@@ -65,50 +68,67 @@ function MetricCard({
   );
 }
 
-export function StatsCards({ stats }: Props) {
+export function StatsCards({ stats, pipelineCiso }: Props) {
   const loading = !stats;
 
   const total      = stats?.total_events      ?? 0;
   const critical   = stats?.critical_events   ?? 0;
   const suspicious = stats?.suspicious_events ?? 0;
   const benign     = stats?.benign_events     ?? 0;
-  const hours      = stats?.hours_saved       ?? 0;
-  const cost       = stats?.cost_saved        ?? 0;
 
-  const attackPct = total > 0 ? ((critical + suspicious) / total * 100).toFixed(1) : "0.0";
+  // Merge pipeline CISO values: pipeline and CIC-IDS cover different datasets,
+  // so the totals are additive.  Pipeline values dominate when they are non-zero.
+  const hours = (stats?.hours_saved    ?? 0) + (pipelineCiso?.analyst_hours_saved ?? 0);
+  const cost  = (stats?.cost_saved     ?? 0) + (pipelineCiso?.cost_avoided_usd    ?? 0);
+
+  const pipelineFlows   = 0;  // rows_processed lives in PipelineCompletion, not ciso
+  const pipelineCrit    = pipelineCiso?.by_severity?.CRITICAL ?? 0;
+  const combinedTotal   = total + pipelineFlows;
+  const combinedCrit    = critical + pipelineCrit;
+  const combinedSusp    = suspicious + (pipelineCiso?.by_severity?.HIGH ?? 0);
+
+  const attackPct = total > 0 ? ((combinedCrit + combinedSusp) / (total || 1) * 100).toFixed(1) : "0.0";
   const benignPct = total > 0 ? (benign / total * 100).toFixed(1) : "0.0";
+
+  const hoursSub = pipelineCiso
+    ? `${pipelineCiso.analyst_hours_saved.toFixed(1)} h pipeline + ${(stats?.hours_saved ?? 0)} h CIC-IDS`
+    : `${stats?.by_severity?.CRITICAL ?? 0} critical × 0.75 h`;
+
+  const costSub = pipelineCiso
+    ? `$${pipelineCiso.cost_avoided_usd.toLocaleString()} pipeline avoided`
+    : "@ $50/hr SOC analyst rate";
 
   return (
     <div className="px-3 py-2.5" style={{ background: "#1a1b1f", borderBottom: "1px solid #2e3038" }}>
       <div className="grid grid-cols-5 gap-2.5">
         <MetricCard
           label="Flows Processed"
-          value={total}
+          value={combinedTotal || total}
           sub={`${benignPct}% benign · ${benign.toLocaleString()} clean`}
           theme="neutral"
           loading={loading}
         />
         <MetricCard
           label="Critical Threats"
-          value={critical}
+          value={combinedCrit}
           sub={`${attackPct}% of all traffic`}
           theme="red"
-          maxValue={total}
+          maxValue={combinedTotal || total || 1}
           loading={loading}
         />
         <MetricCard
           label="Suspicious Activity"
-          value={suspicious}
+          value={combinedSusp}
           sub="HIGH + MEDIUM severity"
           theme="amber"
-          maxValue={total}
+          maxValue={combinedTotal || total || 1}
           loading={loading}
         />
         <MetricCard
           label="Analyst Hours Saved"
-          value={hours}
+          value={Math.round(hours)}
           suffix=" hrs"
-          sub={`${stats?.by_severity?.CRITICAL ?? 0} critical × 0.75 h`}
+          sub={hoursSub}
           theme="green"
           loading={loading}
         />
@@ -116,7 +136,7 @@ export function StatsCards({ stats }: Props) {
           label="Cost Avoided"
           value={cost}
           prefix="$"
-          sub="@ $50/hr SOC analyst rate"
+          sub={costSub}
           theme="cyan"
           loading={loading}
         />

@@ -179,6 +179,76 @@ export interface CicidsPlaybookLog {
   action_detail: string;
 }
 
+// ── Pipeline telemetry ingestion ─────────────────────────────────────────────
+
+export interface CisoPipelineSummary {
+  total_alerts:        number;
+  by_severity:         Record<string, number>;
+  top_techniques:      { id: string; name: string; count: number }[];
+  top_attacker_ips:    { ip: string; count: number }[];
+  top_labels:          { label: string; count: number }[];
+  analyst_hours_saved: number;
+  cost_avoided_usd:    number;
+}
+
+export interface PipelineSession {
+  session_id:      string;
+  filename:        string;
+  dataset_type:    string | null;
+  started_at:      string;
+  completed_at:    string | null;
+  status:          "pending" | "running" | "complete" | "error";
+  rows_processed:  number;
+  alerts_found:    number;
+  chain_root_hash: string | null;
+  chain_tip_hash:  string | null;
+  ciso_summary:    CisoPipelineSummary | null;
+}
+
+/** Lightweight polling response from /api/sessions/{id}/status */
+export interface SessionStatus {
+  session_id:      string;
+  status:          "pending" | "running" | "complete" | "error";
+  rows_processed:  number;
+  alerts_found:    number;
+  /** Only present when status === "complete" */
+  ciso_summary?:   CisoPipelineSummary | null;
+  chain_tip_hash?: string | null;
+}
+
+/** Stored in App global state after a pipeline session completes */
+export interface PipelineCompletion {
+  session_id:      string;
+  filename:        string;
+  chain_tip_hash:  string;
+  ciso_summary:    CisoPipelineSummary;
+  rows_processed:  number;
+  alerts_found:    number;
+}
+
+export interface PipelineAlert {
+  id:              number;
+  session_id:      string;
+  ingested_at:     string;
+  dataset_type:    string;
+  source_ip:       string | null;
+  dest_ip:         string | null;
+  dest_port:       number | null;
+  protocol:        string | null;
+  label:           string;
+  severity:        Severity;
+  mitre_technique: string | null;
+  mitre_name:      string | null;
+  bytes_total:     number | null;
+  chain_hash:      string | null;
+}
+
+export type PipelineWsMessage =
+  | { type: "pipeline_stage";    session_id: string; stage: string; message: string; dataset_type?: string }
+  | { type: "pipeline_progress"; session_id: string; stage: string; rows_processed: number; alerts_found: number }
+  | { type: "pipeline_complete"; session_id: string; filename: string; dataset_type: string; rows_processed: number; alerts_found: number; chain_tip: string; root_hash: string; ciso: CisoPipelineSummary }
+  | { type: "pipeline_error";    session_id: string; error: string; traceback?: string };
+
 // ── WebSocket message union ───────────────────────────────────────────────────
 
 export type WsMessage =
@@ -200,4 +270,5 @@ export type WsMessage =
   | { type: "firewall_block";   data: { src_ip: string; category: string; confidence_pct: number; id: number; blocked_at: string; nonce_prefix: string } }
   | { type: "abc_proving";      data: { record_id: number; src_ip: string } }
   | { type: "abc_auto_block";   data: { record_id: number; src_ip: string; fc: number; firewall_rule_id: number; category: string; confidence_pct: number } }
-  | { type: "abc_low_confidence"; data: { record_id: number; confidence_pct: number } };
+  | { type: "abc_low_confidence"; data: { record_id: number; confidence_pct: number } }
+  | PipelineWsMessage;

@@ -142,10 +142,10 @@ async def _compute_real_metrics(session: AsyncSession, has_data: bool) -> dict:
     else:
         mttd_str = "< 1s"
 
-    # MTTR: average playbook execution time from cicids_playbook_log
+    # MTTR: average playbook execution time from cicids_playbook_logs
     mttr_row = await session.execute(text("""
         SELECT AVG(CAST(action_detail AS REAL))
-        FROM cicids_playbook_log
+        FROM cicids_playbook_logs
         WHERE status = 'SIMULATED'
     """))
     mttr_ms = mttr_row.scalar()
@@ -172,7 +172,7 @@ async def _compute_real_metrics(session: AsyncSession, has_data: bool) -> dict:
 
     # Auto-response: % of HIGH/CRITICAL alerts that have a playbook log entry
     playbook_row = await session.execute(text("""
-        SELECT COUNT(*) FROM cicids_playbook_log WHERE status = 'SIMULATED'
+        SELECT COUNT(*) FROM cicids_playbook_logs WHERE status = 'SIMULATED'
     """))
     playbook_count = playbook_row.scalar() or 0
     high_row = await session.execute(text("""

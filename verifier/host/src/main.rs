@@ -17,7 +17,7 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use rayon::ThreadPoolBuilder;
 use methods::{VERIFIER_GUEST_ELF, VERIFIER_GUEST_ID};
 use risc0_zkvm::{default_prover, ExecutorEnv, Receipt};
-use verifier_core::{NetworkTelemetry, ThreatVerdict};
+use verifier_core::{HostBaselines, IsolationForestModel, NetworkTelemetry, TelemetryInput, ThreatVerdict};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -102,12 +102,19 @@ fn verify_mode(b64: &str) -> Result<()> {
 struct Scenario {
     label:     &'static str,
     telemetry: NetworkTelemetry,
+    /// Statistical baselines for adaptive Z-score / DDSketch rules.
+    baselines: HostBaselines,
+    /// Flattened IsolationForest for Rule 11.
+    /// Use `IsolationForestModel::default()` when no forest is available.
+    forest:    IsolationForestModel,
 }
 
 fn build_scenarios() -> Vec<Scenario> {
     vec![
         // ── Scenario 1: SSH Brute-Force (Patator-style) ───────────────────
         // 340 TCP packets to port 22 over 15 s at ~8.5 KB/s.
+        // Detection: packet Z-score (340 pkts vs mean=12, Z≈32).
+        // T=0: brute-force is packet-based, not volumetric — DDSketch unused.
         // Expected verdict: BRUTE_FORCE, ~82% confidence.
         Scenario {
             label: "SSH Brute-Force (Patator)",
@@ -126,10 +133,20 @@ fn build_scenarios() -> Vec<Scenario> {
                 zeek_uid:           [0u8; 18],
                 epoch_nonce:        0,
             },
+            baselines: HostBaselines {
+                mean_bytes_s_milli:      3_000_000,
+                stddev_bytes_s_milli:    2_000_000,
+                mean_pkts_milli:         12_000,
+                stddev_pkts_milli:       9_000,
+                ddsketch_threshold_fp14: 0,
+            },
+            forest: IsolationForestModel::default(),
         },
 
         // ── Scenario 2: DNS Amplification DDoS ───────────────────────────
         // 18 000 UDP packets to port 53 at 2.5 MB/s over 1 s.
+        // T = floor(200 KB/s × 2^14) = 3_276_800_000  (p99 of normal DNS).
+        // current_scaled = 2_500_000 × 16384 = 40_960_000_000 > T → DDSKETCH_VOLUME ✓
         // Expected verdict: MALWARE (DoS), ~90% confidence.
         Scenario {
             label: "DNS Amplification DDoS",
@@ -148,10 +165,20 @@ fn build_scenarios() -> Vec<Scenario> {
                 zeek_uid:           [0u8; 18],
                 epoch_nonce:        0,
             },
+            baselines: HostBaselines {
+                mean_bytes_s_milli:      50_000_000,
+                stddev_bytes_s_milli:    30_000_000,
+                mean_pkts_milli:         40_000,
+                stddev_pkts_milli:       25_000,
+                ddsketch_threshold_fp14: 3_276_800_000,
+            },
+            forest: IsolationForestModel::default(),
         },
 
         // ── Scenario 3: Stealth nmap SYN Probe ───────────────────────────
         // 1 TCP SYN to port 443 in 50 ms — classic stealthy port scan.
+        // Rule 4 (RAPID_PROBE) fires on fixed timing/packet thresholds only.
+        // T=0: timing-based rule; DDSketch unused.
         // Expected verdict: PORT_SCAN, ~70% confidence.
         Scenario {
             label: "Stealth nmap SYN Probe",
@@ -170,10 +197,20 @@ fn build_scenarios() -> Vec<Scenario> {
                 zeek_uid:           [0u8; 18],
                 epoch_nonce:        0,
             },
+            baselines: HostBaselines {
+                mean_bytes_s_milli:      30_000_000,
+                stddev_bytes_s_milli:    20_000_000,
+                mean_pkts_milli:         50_000,
+                stddev_pkts_milli:       30_000,
+                ddsketch_threshold_fp14: 0,
+            },
+            forest: IsolationForestModel::default(),
         },
 
         // ── Scenario 4: Outbound Data Exfiltration ────────────────────────
         // 700 KB/s outbound for 30 s — large sustained data transfer outward.
+        // T = floor(600 KB/s × 2^14) = 9_830_400_000  (p99 of normal outbound).
+        // current_scaled = 700_000 × 16384 = 11_468_800_000 > T → DDSKETCH_VOLUME ✓
         // Expected verdict: EXFILTRATION, ~80% confidence.
         Scenario {
             label: "Outbound Data Exfiltration",
@@ -192,10 +229,20 @@ fn build_scenarios() -> Vec<Scenario> {
                 zeek_uid:           [0u8; 18],
                 epoch_nonce:        0,
             },
+            baselines: HostBaselines {
+                mean_bytes_s_milli:      200_000_000,
+                stddev_bytes_s_milli:    100_000_000,
+                mean_pkts_milli:         500_000,
+                stddev_pkts_milli:       300_000,
+                ddsketch_threshold_fp14: 9_830_400_000,
+            },
+            forest: IsolationForestModel::default(),
         },
 
         // ── Scenario 5: Benign HTTPS Session ─────────────────────────────
-        // Normal HTTPS browsing — low rate, short, one direction.
+        // Normal HTTPS browsing — 15 KB/s, short, inbound.
+        // T = floor(200 KB/s × 2^14) = 3_276_800_000.
+        // current_scaled = 15_000 × 16384 = 245_760_000 < T → NOT volumetric ✓
         // Expected verdict: BENIGN, no rules triggered.
         Scenario {
             label: "Benign HTTPS Browsing",
@@ -214,10 +261,20 @@ fn build_scenarios() -> Vec<Scenario> {
                 zeek_uid:           [0u8; 18],
                 epoch_nonce:        0,
             },
+            baselines: HostBaselines {
+                mean_bytes_s_milli:      50_000_000,
+                stddev_bytes_s_milli:    30_000_000,
+                mean_pkts_milli:         60_000,
+                stddev_pkts_milli:       40_000,
+                ddsketch_threshold_fp14: 3_276_800_000,
+            },
+            forest: IsolationForestModel::default(),
         },
 
         // ── Scenario 6: FTP Brute Force (Patator) ────────────────────────
         // 280 TCP packets to port 21 — Patator dictionary attack.
+        // Detection: packet Z-score (280 pkts vs mean=8, Z≈34).
+        // T=0: packet-based rule; DDSketch unused.
         // Expected verdict: BRUTE_FORCE, ~82% confidence.
         Scenario {
             label: "FTP Brute-Force (Patator)",
@@ -236,28 +293,39 @@ fn build_scenarios() -> Vec<Scenario> {
                 zeek_uid:           [0u8; 18],
                 epoch_nonce:        0,
             },
+            baselines: HostBaselines {
+                mean_bytes_s_milli:      2_000_000,
+                stddev_bytes_s_milli:    1_500_000,
+                mean_pkts_milli:         8_000,
+                stddev_pkts_milli:       8_000,
+                ddsketch_threshold_fp14: 0,
+            },
+            forest: IsolationForestModel::default(),
         },
 
         // ── Scenario 7: Unauthorized Modbus PLC Write (ICS/SCADA) ────────
         // FC 16 (Write Multiple Registers) from external IP to a PLC.
-        // Expected verdict: MALWARE, ~95% confidence (MODBUS_WRITE rule).
+        // MODBUS_WRITE rule fires on hard FC match — no baseline needed.
+        // Expected verdict: MALWARE, ~95% confidence.
         Scenario {
             label: "Unauthorized Modbus PLC Write",
             telemetry: NetworkTelemetry {
-                src_ip:             [ 10,  0, 50,  1],    // engineering workstation
-                dst_ip:             [ 10,  0, 10,  5],    // PLC (Siemens S7-300)
+                src_ip:             [ 10,  0, 50,  1],
+                dst_ip:             [ 10,  0, 10,  5],
                 dst_port:           502,
                 protocol:           6,
-                flow_duration_us:   200_000,              // 200 ms — single write
-                flow_bytes_s_milli: 1_200_000,            // 1.2 KB/s
+                flow_duration_us:   200_000,
+                flow_bytes_s_milli: 1_200_000,
                 packet_count:       4,
                 direction:          0,
-                sourcetype:         4,                    // zeek
-                modbus_func_code:   16,                   // Write Multiple Registers
+                sourcetype:         4,
+                modbus_func_code:   16,
                 modbus_unit_id:     1,
                 zeek_uid:           *b"CXbbkK4Ydx3q1M0Z0\x00",
                 epoch_nonce:        1_745_000_000,
             },
+            baselines: HostBaselines::default(),
+            forest:   IsolationForestModel::default(),
         },
     ]
 }
@@ -273,9 +341,16 @@ fn prove_scenario(s: &Scenario) -> Result<()> {
     println!("{}", "─".repeat(68));
 
     // ── Build the executor environment ────────────────────────────────────
+    // Bundle telemetry + baselines into TelemetryInput so the guest can
+    // compute Z-scores without floating-point operations.
+    let input = TelemetryInput {
+        telemetry: s.telemetry.clone(),
+        baselines: s.baselines.clone(),
+        forest:    s.forest.clone(),
+    };
     let env = ExecutorEnv::builder()
-        .write(&s.telemetry)
-        .context("Failed to write telemetry to executor env")?
+        .write(&input)
+        .context("Failed to write TelemetryInput to executor env")?
         .build()
         .context("Failed to build executor env")?;
 
@@ -419,10 +494,19 @@ fn prove_file_mode(path: &str) -> Result<()> {
     let raw = fs::read(path)
         .with_context(|| format!("Failed to read bincode file: {}", path))?;
 
-    let telemetry: NetworkTelemetry = bincode::deserialize(&raw)
-        .context("Failed to deserialize NetworkTelemetry from bincode file")?;
+    // Try deserializing as TelemetryInput (new format with baselines) first;
+    // fall back to bare NetworkTelemetry (edge nodes that haven't upgraded yet).
+    let (telemetry, baselines) = if let Ok(input) = bincode::deserialize::<TelemetryInput>(&raw) {
+        println!("[*] Loaded TelemetryInput (with baselines) from file: {}", path);
+        (input.telemetry, input.baselines)
+    } else {
+        let t: NetworkTelemetry = bincode::deserialize(&raw)
+            .context("Failed to deserialize NetworkTelemetry or TelemetryInput from bincode file")?;
+        println!("[*] Loaded NetworkTelemetry (no baselines) from file: {}", path);
+        println!("    [!] Absolute fallback thresholds will be used (Z-score rules inactive)");
+        (t, HostBaselines::default())
+    };
 
-    println!("[*] Loaded telemetry from file: {}", path);
     println!("    Source   : {}", telemetry.src_ip_str());
     println!("    Target   : {}:{}", telemetry.dst_ip_str(), telemetry.dst_port);
     if telemetry.modbus_func_code > 0 {
@@ -430,8 +514,10 @@ fn prove_file_mode(path: &str) -> Result<()> {
     }
 
     let scenario = Scenario {
-        label: "Edge Bincode Input",
+        label:    "Edge Bincode Input",
         telemetry,
+        baselines,
+        forest:   IsolationForestModel::default(),
     };
     prove_scenario(&scenario)
 }

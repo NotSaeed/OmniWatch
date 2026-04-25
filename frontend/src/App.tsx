@@ -1,3 +1,5 @@
+import { Component } from "react";
+import type { ErrorInfo, ReactNode } from "react";
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Toaster, toast } from "sonner";
@@ -15,7 +17,7 @@ import {
 } from "lucide-react";
 
 import { api } from "./lib/api";
-import type { Alert, CicidsPlaybookLog, CicidsStats, DashboardStats, WsMessage } from "./lib/types";
+import type { Alert, CicidsPlaybookLog, CicidsStats, CisoPipelineSummary, DashboardStats, PipelineCompletion, PipelineWsMessage, WsMessage } from "./lib/types";
 import { useWebSocket } from "./hooks/useWebSocket";
 
 
@@ -33,9 +35,29 @@ import { TrustChainDAG }           from "./components/TrustChainDAG";
 import { EdgeTelemetryPanel }      from "./components/EdgeTelemetryPanel";
 import { Fido2Panel }              from "./components/Fido2Panel";
 import { FirewallHistoryPanel }    from "./components/FirewallHistoryPanel";
+import { TelemetryUploader }       from "./components/TelemetryUploader";
 import type { TrustNode, NodeState } from "./components/TrustChainDAG";
 
 type Page = "dashboard" | "logexplorer" | "playbooks" | "trustchain" | "settings";
+
+// ── Error boundary — prevents a single widget crash from blanking the page ────
+
+class PanelErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(_error: Error, _info: ErrorInfo) {}
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex items-center justify-center p-6 rounded-lg"
+             style={{ background: "#0d0d10", border: "1px solid #2e3038", color: "#4d5060" }}>
+          <span className="text-xs font-mono">Panel error — check console</span>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // ── AI Sparkle icon ───────────────────────────────────────────────────────────
 
@@ -100,22 +122,44 @@ export default function App() {
     queryFn:         api.getAbcStatus,
     refetchInterval: 5000,
   });
+  const { data: edgeStatusData } = useQuery({
+    queryKey:        ["edge-status"],
+    queryFn:         api.getEdgeStatus,
+    refetchInterval: 5000,
+  });
   const [dagNodes, setDagNodes] = useState<TrustNode[]>([
-    { id: "edge",    label: "Edge Telemetry",    sublabel: "Pi 4 · Zeek + ICSNPP",       state: "verified",  position: [-4, 1.5, 0] },
-    { id: "bincode", label: "Bincode Payload",   sublabel: "61-byte serialized struct",   state: "verified",  position: [-1.5, 1.5, 0] },
-    { id: "zkvm",    label: "STARK Proof",       sublabel: "RISC Zero zkVM (Machine)",    state: "pending",   position: [1.5, 1.5, 0] },
-    { id: "fido2",   label: "FIDO2 Signature",   sublabel: "ECDSA · WebAuthn (Human)",    state: "pending",   position: [1.5, -1, 0] },
-    { id: "gate",    label: "Verification Gate", sublabel: "Dual-factor: Machine + Human", state: "pending", position: [4.5, 0.25, 0] },
-    { id: "action",  label: "Remediation",       sublabel: "Network isolation · Firewall", state: "pending",  position: [7, 0.25, 0] },
+    { id: "edge",    label: "Edge Telemetry",    sublabel: "Pi 4 · Zeek + ICSNPP",        state: "pending",  position: [-4, 1.5, 0] },
+    { id: "bincode", label: "Bincode Payload",   sublabel: "61-byte serialized struct",    state: "pending",  position: [-1.5, 1.5, 0] },
+    { id: "zkvm",    label: "STARK Proof",       sublabel: "RISC Zero zkVM (Machine)",     state: "pending",  position: [1.5, 1.5, 0] },
+    { id: "fido2",   label: "FIDO2 Signature",   sublabel: "ECDSA · WebAuthn (Human)",     state: "pending",  position: [1.5, -1, 0] },
+    { id: "gate",    label: "Verification Gate", sublabel: "Dual-factor: Machine + Human", state: "pending",  position: [4.5, 0.25, 0] },
+    { id: "action",  label: "Remediation",       sublabel: "Network isolation · Firewall",  state: "pending",  position: [7, 0.25, 0] },
   ]);
 
   const updateNodeState = (id: string, state: NodeState) => {
     setDagNodes(prev => prev.map(n => n.id === id ? { ...n, state } : n));
   };
 
-  // CSV upload
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [uploadPct,      setUploadPct]      = useState<number | null>(null);
+  useEffect(() => {
+    const hasEdge = (edgeStatusData?.records_received ?? 0) > 0;
+    setDagNodes(prev => prev.map(n =>
+      n.id === "edge" || n.id === "bincode"
+        ? { ...n, state: hasEdge ? "verified" : "pending" }
+        : n,
+    ));
+  }, [edgeStatusData?.records_received]);
+
+  // Pipeline uploader modal
+  const [showUploader,      setShowUploader]      = useState(false);
+  const [pipelineWsMessage, setPipelineWsMessage] = useState<PipelineWsMessage | null>(null);
+
+  // Global pipeline completion — set when any session reaches "complete".
+  // Drives the Dashboard StatsCards and the TrustChain DAG hash display.
+  const [pipelineCompletion, setPipelineCompletion] = useState<PipelineCompletion | null>(null);
+
+  // Active session context — drives session-scoped data fetching across views.
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeFileName,  setActiveFileName]  = useState<string | null>(null);
 
   // Clear-data two-step confirm
   const [confirmClear,   setConfirmClear]   = useState(false);
@@ -130,9 +174,10 @@ export default function App() {
   });
 
   const { data: cicidsStats } = useQuery<CicidsStats>({
-    queryKey:        ["cicids-stats"],
-    queryFn:         api.getCicidsStats,
-    refetchInterval: 60_000,   // data only changes on upload; invalidated explicitly then
+    // Re-fetch automatically when the active session changes.
+    queryKey:        ["cicids-stats", activeSessionId],
+    queryFn:         () => api.getCicidsStats(activeSessionId),
+    refetchInterval: 60_000,
   });
 
   const { data: monitor } = useQuery({
@@ -238,8 +283,9 @@ export default function App() {
       );
     }
     if (msg.type === "abc_proving") {
+      // ABC uses machine proof only — fido2 stays pending (not involved in ABC)
       setDagNodes(prev => prev.map(n =>
-        n.id === "zkvm" || n.id === "fido2" ? { ...n, state: "verifying" } :
+        n.id === "zkvm" ? { ...n, state: "verifying" } :
         n.id === "gate" || n.id === "action" ? { ...n, state: "pending" } : n,
       ));
       toast.loading(
@@ -248,7 +294,10 @@ export default function App() {
       );
     }
     if (msg.type === "abc_auto_block") {
-      setDagNodes(prev => prev.map(n => ({ ...n, state: "verified" as const })));
+      // ABC is machine-only: STARK-proven but no human FIDO2 — leave fido2 node as pending
+      setDagNodes(prev => prev.map(n =>
+        n.id === "fido2" ? n : { ...n, state: "verified" as const },
+      ));
       qc.invalidateQueries({ queryKey: ["firewall-status"] });
       toast.success(
         `ABC: Auto-blocked ${msg.data.src_ip} — Modbus FC${msg.data.fc} (${msg.data.confidence_pct}% conf.)`,
@@ -267,34 +316,37 @@ export default function App() {
         duration: 6000,
       });
     }
+    if (
+      msg.type === "pipeline_stage" || msg.type === "pipeline_progress" ||
+      msg.type === "pipeline_complete" || msg.type === "pipeline_error"
+    ) {
+      setPipelineWsMessage(msg);
+    }
+    if (msg.type === "pipeline_complete") {
+      const m = msg as any;
+      const sid: string = m.session_id ?? "";
+      const fname: string = m.filename ?? "";
+      if (m.ciso_summary && m.chain_tip_hash) {
+        setPipelineCompletion({
+          session_id:     sid,
+          filename:       fname,
+          chain_tip_hash: m.chain_tip_hash,
+          ciso_summary:   m.ciso_summary,
+          rows_processed: m.rows_processed ?? 0,
+          alerts_found:   m.alerts_found ?? 0,
+        });
+      }
+      qc.invalidateQueries({ queryKey: ["stats"] });
+      qc.invalidateQueries({ queryKey: ["botsv3-dashboard"] });
+      // Bust the session-scoped key that was active when the pipeline started
+      qc.invalidateQueries({ queryKey: ["cicids-stats"] });
+      qc.invalidateQueries({ queryKey: ["pipeline-alerts"] });
+    }
   }, [qc]);
 
   const wsConnected = useWebSocket(handleWsMessage);
 
   // ── Actions ────────────────────────────────────────────────────────────────
-  async function handleCsvUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = "";
-
-    setUploadPct(0);
-    const tid = toast.loading(`Uploading ${file.name}…`, { description: "Streaming file to server" });
-    try {
-      await api.uploadCsv(file, pct => setUploadPct(pct));
-      setUploadPct(null);
-      // File is on disk — ingestion runs in the background.
-      // Widgets will update automatically when the "cicids_ingest_complete"
-      // WebSocket message arrives. Do NOT navigate away from the current page.
-      toast.success(`${file.name} uploaded`, {
-        id: tid,
-        description: "Ingestion running in background — widgets will refresh automatically",
-        duration: 5000,
-      });
-    } catch {
-      setUploadPct(null);
-      toast.error("Upload failed", { id: tid, description: "Check that the backend is running on port 8080" });
-    }
-  }
 
   // Two-step database clear
   async function handleClearData() {
@@ -346,18 +398,15 @@ export default function App() {
       updateNodeState("zkvm", "verified");
       toast.success("STARK Proof generated successfully!", { id: tid });
       
-      // 2. FIDO2 Ceremony (mock for demo)
+      // 2. FIDO2 Ceremony — software mock (no hardware key enrolled)
       updateNodeState("fido2", "verifying");
-      const fdoId = toast.loading("Confirming Human Oversight (FIDO2 Authentication)…");
-      
-      const authBegin = await api.fido2SignBegin(receiptB64);
+      const fdoId = toast.loading("FIDO2 Signing Ceremony [Software Demo Mode]…");
+
+      const authBegin = await api.fido2SignBegin(receiptB64, true);
       const { session_id } = authBegin;
-      
-      // Simulate authenticating since hardware is unavailable
-      await new Promise(r => setTimeout(r, 2000));
-      
+
       updateNodeState("fido2", "verified");
-      toast.success("Human signed proof of oversight.", { id: fdoId });
+      toast.success("Analyst sign-off recorded [Software Demo — no hardware key tap].", { id: fdoId });
       
       // 3. Verification Gate submission
       updateNodeState("gate", "verifying");
@@ -420,15 +469,6 @@ export default function App() {
         toastOptions={{
           style: { background: "#1e1f23", border: "1px solid #2e3038", color: "#c5c7d4", fontSize: "12px" },
         }}
-      />
-
-      {/* Hidden file input */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".csv"
-        onChange={handleCsvUpload}
-        className="hidden"
       />
 
       {/* ── Sidebar ──────────────────────────────────────────────────────── */}
@@ -575,6 +615,29 @@ export default function App() {
             {NAV_ITEMS.find(n => n.page === activePage)?.description}
           </span>
 
+          {/* Active dataset badge — always visible when a session is loaded */}
+          {activeFileName && (
+            <div
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded"
+              style={{
+                background: "rgba(78,154,241,0.08)",
+                border: "1px solid rgba(78,154,241,0.25)",
+              }}
+            >
+              <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "#4e9af1" }} />
+              <span className="text-[10px] font-medium" style={{ color: "#4e9af1" }}>
+                Active Dataset:
+              </span>
+              <span
+                className="text-[10px] font-mono font-semibold truncate max-w-[180px]"
+                style={{ color: "#c5c7d4" }}
+                title={activeFileName}
+              >
+                {activeFileName}
+              </span>
+            </div>
+          )}
+
           <div className="ml-auto flex items-center gap-2">
             {/* CISO Executive Report */}
             <button
@@ -601,7 +664,7 @@ export default function App() {
               <>
                 <button
                   onClick={handleClearData}
-                  disabled={clearing || uploadPct !== null}
+                  disabled={clearing}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium
                              disabled:opacity-40 disabled:cursor-not-allowed transition-all active:opacity-70"
                   style={{
@@ -620,20 +683,12 @@ export default function App() {
                 </button>
 
                 <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploadPct !== null}
+                  onClick={() => setShowUploader(true)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium
-                             disabled:opacity-40 disabled:cursor-not-allowed transition-opacity active:opacity-70"
+                             transition-opacity active:opacity-70"
                   style={{ background: "rgba(114,200,17,0.12)", border: "1px solid rgba(114,200,17,0.3)", color: "var(--splunk-green)" }}
                 >
-                  {uploadPct !== null ? (
-                    <>
-                      <span className="w-2 h-2 rounded-full border border-current border-t-transparent animate-spin" />
-                      <span className="font-mono">{uploadPct}%</span>
-                    </>
-                  ) : (
-                    <><Upload className="w-3 h-3" /> Upload CSV</>
-                  )}
+                  <Upload className="w-3 h-3" /> Upload CSV
                 </button>
               </>
             )}
@@ -649,12 +704,13 @@ export default function App() {
               botsData={botsData}
               alerts={alerts}
               lastScanId={lastScanId}
+              pipelineCiso={pipelineCompletion?.ciso_summary}
             />
           )}
 
           {activePage === "logexplorer" && (
             <div className="h-[calc(100vh-53px)] flex flex-col">
-              <LogExplorer />
+              <LogExplorer sessionId={activeSessionId} />
             </div>
           )}
 
@@ -666,7 +722,10 @@ export default function App() {
             <div className="p-3 space-y-3">
               {/* 3D DAG */}
               <div className="rounded-xl overflow-hidden" style={{ background: "#0a0a0d", border: "1px solid #1a1a1f" }}>
-                <TrustChainDAG nodes={dagNodes} />
+                <TrustChainDAG
+                  nodes={dagNodes}
+                  pipelineHash={pipelineCompletion?.chain_tip_hash ?? undefined}
+                />
               </div>
 
               {/* Info cards + ABC toggle */}
@@ -749,6 +808,19 @@ export default function App() {
         </div>
       </div>
 
+      {showUploader && (
+        <TelemetryUploader
+          onClose={() => { setShowUploader(false); setPipelineWsMessage(null); }}
+          pipelineWsMessage={pipelineWsMessage}
+          onComplete={(result) => {
+            setPipelineCompletion(result);
+            setActiveSessionId(result.session_id);
+            setActiveFileName(result.filename);
+            // Bust session-scoped queries so the dashboard fetches fresh data
+            qc.invalidateQueries({ queryKey: ["cicids-stats", result.session_id] });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -783,13 +855,14 @@ function DashboardSkeleton() {
 // ── Dashboard page ────────────────────────────────────────────────────────────
 
 function DashboardPage({
-  stats, cicidsStats, botsData, alerts, lastScanId,
+  stats, cicidsStats, botsData, alerts, lastScanId, pipelineCiso,
 }: {
-  stats:       DashboardStats | undefined;
-  cicidsStats: CicidsStats | undefined;
-  botsData:    any | undefined;
-  alerts:      Alert[];
-  lastScanId:  string | null;
+  stats:        DashboardStats | undefined;
+  cicidsStats:  CicidsStats | undefined;
+  botsData:     any | undefined;
+  alerts:       Alert[];
+  lastScanId:   string | null;
+  pipelineCiso: CisoPipelineSummary | undefined;
 }) {
   // Block render until at least one data source has returned — prevents
   // Recharts from receiving undefined props before queries complete.
@@ -800,11 +873,13 @@ function DashboardPage({
   return (
     <>
       <StatsBar stats={stats} />
-      <StatsCards stats={stats} />
+      <StatsCards stats={stats} pipelineCiso={pipelineCiso} />
 
       {/* Purple Team Metrics strip */}
       <div className="px-3 pt-2 pb-0">
-        <PurpleTeamMetrics metrics={botsData?.metrics} />
+        <PanelErrorBoundary>
+          <PurpleTeamMetrics metrics={botsData?.metrics} />
+        </PanelErrorBoundary>
       </div>
 
       {/* Primary chart grid */}
@@ -812,14 +887,18 @@ function DashboardPage({
         {/* Left sidebar */}
         <aside className="col-span-3 space-y-2.5">
           <BentoPanel title="Severity Distribution">
-            <SeverityChart 
-              stats={stats} 
-              cicidsStats={cicidsStats} 
-              botsTactics={botsData?.mitre_tactics} 
-            />
+            <PanelErrorBoundary>
+              <SeverityChart
+                stats={stats}
+                cicidsStats={cicidsStats}
+                botsTactics={botsData?.mitre_tactics}
+              />
+            </PanelErrorBoundary>
           </BentoPanel>
           <BentoPanel title="Network Protocol Distribution">
-            <PortProtocolChart protocols={botsData?.protocols} />
+            <PanelErrorBoundary>
+              <PortProtocolChart protocols={botsData?.protocols} />
+            </PanelErrorBoundary>
           </BentoPanel>
         </aside>
 
@@ -828,22 +907,28 @@ function DashboardPage({
           {lastScanId && <KillChainNarrativePanel scanRunId={lastScanId} />}
 
           <BentoPanel title="MITRE ATT&CK Coverage">
-            <MitreHeatmap 
-              alerts={alerts} 
-              cicidsStats={cicidsStats} 
-              botsTactics={botsData?.mitre_tactics}
-            />
+            <PanelErrorBoundary>
+              <MitreHeatmap
+                alerts={alerts}
+                cicidsStats={cicidsStats}
+                botsTactics={botsData?.mitre_tactics}
+              />
+            </PanelErrorBoundary>
           </BentoPanel>
 
           <div className="grid grid-cols-2 gap-2.5">
             <BentoPanel title="Top Attack Vectors">
-              <ThreatVectorChart 
-                cicidsStats={cicidsStats} 
-                botsTactics={botsData?.mitre_tactics}
-              />
+              <PanelErrorBoundary>
+                <ThreatVectorChart
+                  cicidsStats={cicidsStats}
+                  botsTactics={botsData?.mitre_tactics}
+                />
+              </PanelErrorBoundary>
             </BentoPanel>
             <BentoPanel title="Threat Activity — 24h Timeline">
-              <ThreatTimelineChart cicidsStats={cicidsStats} />
+              <PanelErrorBoundary>
+                <ThreatTimelineChart cicidsStats={cicidsStats} />
+              </PanelErrorBoundary>
             </BentoPanel>
           </div>
         </main>
@@ -852,10 +937,14 @@ function DashboardPage({
       {/* Bottom analytics row */}
       <div className="grid grid-cols-2 gap-2.5 px-3 pb-3">
         <BentoPanel title="Financial ROI — Cost Avoidance">
-          <FinancialRoiChart roiData={botsData?.roi_data} />
+          <PanelErrorBoundary>
+            <FinancialRoiChart roiData={botsData?.roi_data} />
+          </PanelErrorBoundary>
         </BentoPanel>
         <BentoPanel title="MITRE ATT&CK Tactic Breakdown">
-          <MitreTacticChart tactics={botsData?.mitre_tactics} />
+          <PanelErrorBoundary>
+            <MitreTacticChart tactics={botsData?.mitre_tactics} />
+          </PanelErrorBoundary>
         </BentoPanel>
       </div>
     </>
@@ -980,7 +1069,7 @@ function ThreatTimelineChart({ cicidsStats }: { cicidsStats: CicidsStats | undef
     cursor: { stroke: "rgba(255,255,255,0.06)", strokeWidth: 20 },
   };
 
-  if (!hasData) {
+  if (!hasData || data.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-44 gap-2" style={{ color: "#4d5060" }}>
         <TrendingUpIcon className="w-8 h-8 opacity-15" style={{ color: "var(--splunk-muted)" }} />
@@ -1097,14 +1186,24 @@ function PurpleTeamMetrics({ metrics }: { metrics?: any }) {
 // ── Financial ROI chart ───────────────────────────────────────────────────────
 
 function FinancialRoiChart({ roiData }: { roiData?: any[] }) {
-  const data = roiData && roiData.length > 0 ? roiData : [
-    { month: "Jan",  incidents: 0, cost: 0,   avoided: 0  },
-    { month: "Feb",  incidents: 0, cost: 0,   avoided: 0  },
-    { month: "Mar",  incidents: 0, cost: 0,   avoided: 0  },
-    { month: "Apr",  incidents: 0, cost: 0,   avoided: 0  },
-    { month: "May",  incidents: 0, cost: 0,   avoided: 0  },
-    { month: "Jun",  incidents: 0, cost: 0,   avoided: 0  },
-  ];
+  const hasData = roiData && roiData.length > 0 && roiData.some(d => (d.avoided ?? 0) + (d.cost ?? 0) + (d.incidents ?? 0) > 0);
+
+  if (!hasData) {
+    return (
+      <div className="flex flex-col items-center justify-center h-44 gap-2" style={{ color: "#4d5060" }}>
+        <TrendingUpIcon className="w-8 h-8 opacity-15" style={{ color: "var(--splunk-muted)" }} />
+        <p className="text-xs">ROI model populates after telemetry upload</p>
+      </div>
+    );
+  }
+
+  const data         = roiData!;
+  const totalAvoided = data.reduce((s, d) => s + (d.avoided ?? 0), 0);
+  const totalCost    = data.reduce((s, d) => s + (d.cost    ?? 0), 0);
+  const roiPct       = totalCost > 0 ? Math.round((totalAvoided - totalCost) / totalCost * 100) : 0;
+  const avoidedFmt   = totalAvoided >= 1000
+    ? `$${(totalAvoided / 1000).toFixed(1)}M`
+    : `$${totalAvoided.toFixed(0)}K`;
 
   const tooltipStyle = {
     contentStyle: { background: "#1e1f23", border: "1px solid #2e3038", borderRadius: 4, fontSize: 11, color: "#c5c7d4" },
@@ -1114,10 +1213,11 @@ function FinancialRoiChart({ roiData }: { roiData?: any[] }) {
     <div>
       <div className="flex items-center justify-between mb-2 px-1">
         <span className="text-[10px] font-mono tabular-nums" style={{ color: "#6b6e80" }}>
-          Cumulative avoided: <span className="font-semibold" style={{ color: "#72c811" }}>$110.2M</span>
+          Cumulative avoided:{" "}
+          <span className="font-semibold" style={{ color: "#72c811" }}>{avoidedFmt}</span>
         </span>
         <span className="text-[9px] uppercase tracking-wider font-semibold" style={{ color: "#72c811" }}>
-          ROI 1,240%
+          {totalCost > 0 ? `ROI ${roiPct.toLocaleString()}%` : "Active"}
         </span>
       </div>
       <ResponsiveContainer width="100%" height={148}>
@@ -1157,13 +1257,18 @@ function FinancialRoiChart({ roiData }: { roiData?: any[] }) {
 // ── Port / Protocol distribution PieChart ────────────────────────────────────
 
 function PortProtocolChart({ protocols }: { protocols?: any[] }) {
-  const data = protocols && protocols.length > 0 ? protocols : [
-    { name: "HTTP :80",   value: 0, color: "#4e9af1" },
-    { name: "SSH :22",    value: 0, color: "#e84d4d" },
-    { name: "HTTPS :443", value: 0, color: "#72c811" },
-    { name: "DNS :53",    value: 0, color: "#f4a926" },
-  ];
+  const hasData = protocols && protocols.length > 0 && protocols.some(p => (p.value ?? 0) > 0);
 
+  if (!hasData) {
+    return (
+      <div className="flex flex-col items-center justify-center h-32 gap-2" style={{ color: "#4d5060" }}>
+        <BarChart2Icon className="w-8 h-8 opacity-15" style={{ color: "var(--splunk-muted)" }} />
+        <p className="text-xs">Protocol distribution populates after telemetry upload</p>
+      </div>
+    );
+  }
+
+  const data = protocols!;
   return (
     <div>
       <div className="flex items-center justify-between mb-1 px-1">
@@ -1205,15 +1310,18 @@ function PortProtocolChart({ protocols }: { protocols?: any[] }) {
 // ── MITRE ATT&CK Tactic breakdown ─────────────────────────────────────────────
 
 function MitreTacticChart({ tactics }: { tactics?: any[] }) {
-  const data = tactics && tactics.length > 0 ? tactics : [
-    { tactic: "Initial Access",    count: 0, color: "#e84d4d" },
-    { tactic: "Execution",         count: 0, color: "#f4a926" },
-    { tactic: "Command and Control", count: 0, color: "#8b5cf6" },
-    { tactic: "Credential Access", count: 0, color: "#00d4c8" },
-    { tactic: "Discovery",         count: 0, color: "#4e9af1" },
-    { tactic: "Lateral Movement",  count: 0, color: "#d946ef" },
-  ];
+  const hasData = tactics && tactics.length > 0 && tactics.some(d => (d.count ?? 0) > 0);
 
+  if (!hasData) {
+    return (
+      <div className="flex flex-col items-center justify-center h-44 gap-2" style={{ color: "#4d5060" }}>
+        <Shield className="w-8 h-8 opacity-15" style={{ color: "var(--splunk-muted)" }} />
+        <p className="text-xs">ATT&CK tactic breakdown populates after telemetry upload</p>
+      </div>
+    );
+  }
+
+  const data = tactics!;
   const max = Math.max(1, ...data.map(d => d.count));
   return (
     <div className="space-y-1.5 pt-1">
