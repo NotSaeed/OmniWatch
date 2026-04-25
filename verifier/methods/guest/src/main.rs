@@ -37,12 +37,6 @@ risc0_zkvm::guest::entry!(main);
 const SPARSE_SOURCETYPES: &[u8] = &[0 /* simulated/unknown */];
 const CONFIDENCE_CAP_SPARSE: u8 = 50;
 
-// ── Z-score threshold (fixed-point, ×1000) ────────────────────────────────────
-//
-// ZSCORE_THRESHOLD = 3000 means |Z| > 3.0.
-// Stored as u64 × 1000 to stay integer-only throughout.
-const ZSCORE_THRESHOLD: u64 = 3_000;
-
 // ── Forensic timing constants (hard properties of specific attack types) ──────
 //
 // These are NOT threshold tunables — they are definitional properties of the
@@ -57,26 +51,21 @@ const EXFIL_MIN_DURATION_MS: u64 = 5_000;
 
 // ── Z-score helpers (pure integer, no float) ─────────────────────────────────
 
-/// Compute |value - mean| × 1000 / stddev (fixed-point Z-score magnitude).
-///
-/// Returns 0 if `stddev == 0` (no baseline — caller must skip the rule).
-/// The result is comparable against `ZSCORE_THRESHOLD`:
-///   `zscore_scaled(...) > ZSCORE_THRESHOLD` ↔ |Z| > 3.0
+/// Compute fixed-point Z-score magnitude and check if |Z| > 3.0 safely
+/// without scaling division.
 #[inline]
-fn zscore_scaled(value: u64, mean: u64, stddev: u64) -> u64 {
-    if stddev == 0 {
-        return 0;
-    }
-    let diff = if value >= mean { value - mean } else { mean - value };
-    diff.saturating_mul(1_000) / stddev
+fn zscore_exceeds_3(value: u64, mean: u64, stddev: u64) -> bool {
+    if stddev == 0 { return false; }
+    let diff = if value > mean { value - mean } else { mean - value };
+    diff.saturating_mul(1000) > stddev.saturating_mul(3000)
 }
 
 /// Z-score for packet count.  Packet counts are stored ×1000 in
 /// `HostBaselines` (mean_pkts_milli / stddev_pkts_milli) so the math is
 /// identical to the bytes/s path.
 #[inline]
-fn zscore_pkts(pkt_count: u32, baselines: &HostBaselines) -> u64 {
-    zscore_scaled(
+fn zscore_pkts_exceeds_3(pkt_count: u32, baselines: &HostBaselines) -> bool {
+    zscore_exceeds_3(
         (pkt_count as u64).saturating_mul(1_000),
         baselines.mean_pkts_milli,
         baselines.stddev_pkts_milli,
@@ -106,11 +95,8 @@ fn volumetric_exceeded(
 ) -> bool {
     if b.ddsketch_threshold_fp14 > 0 {
         current_scaled > b.ddsketch_threshold_fp14
-    } else if b.stddev_bytes_s_milli > 0 {
-        zscore_scaled(flow_bytes_s_milli, b.mean_bytes_s_milli, b.stddev_bytes_s_milli)
-            > ZSCORE_THRESHOLD
     } else {
-        false
+        zscore_exceeds_3(flow_bytes_s_milli, b.mean_bytes_s_milli, b.stddev_bytes_s_milli)
     }
 }
 
@@ -129,7 +115,7 @@ fn volumetric_bits(b: &HostBaselines) -> u32 {
 /// Returns false when no packet baselines are available (stddev == 0).
 #[inline]
 fn packet_threshold_exceeded(pkt_count: u32, b: &HostBaselines) -> bool {
-    b.stddev_pkts_milli > 0 && zscore_pkts(pkt_count, b) > ZSCORE_THRESHOLD
+    zscore_pkts_exceeds_3(pkt_count, b)
 }
 
 // ── LODA evaluation (pure integer, no float) ──────────────────────────────────
@@ -396,17 +382,10 @@ fn evaluate(input: &TelemetryInput, input_hash: [u8; 32]) -> ThreatVerdict {
         fired & (rules::HIGH_RATE | rules::DDSKETCH_VOLUME | rules::ZSCORE_ANOMALY) != 0;
 
     if !volumetric_already_fired {
-        let z_b = if b.stddev_bytes_s_milli > 0 {
-            zscore_scaled(t.flow_bytes_s_milli, b.mean_bytes_s_milli, b.stddev_bytes_s_milli)
-        } else {
-            0
-        };
-        let z_p = if b.stddev_pkts_milli > 0 {
-            zscore_pkts(t.packet_count, b)
-        } else {
-            0
-        };
-        if z_b > ZSCORE_THRESHOLD || z_p > ZSCORE_THRESHOLD {
+        let z_b_exceeds = zscore_exceeds_3(t.flow_bytes_s_milli, b.mean_bytes_s_milli, b.stddev_bytes_s_milli);
+        let z_p_exceeds = zscore_pkts_exceeds_3(t.packet_count, b);
+
+        if z_b_exceeds || z_p_exceeds {
             fired |= rules::ZSCORE_ANOMALY;
             if cat == 0 {
                 cat  = 5; // ANOMALY

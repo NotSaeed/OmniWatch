@@ -665,21 +665,21 @@ Step 2 ensures the STARK proof commits to the exact input that was evaluated. A 
 #### 10.4.1 Z-Score Rule (integer, guest-side)
 
 ```rust
-fn zscore_scaled(value: u64, mean: u64, stddev: u64) -> u64 {
+fn zscore_exceeds_3(value: u64, mean: u64, stddev: u64) -> bool {
     // All values are ×1000 (milli-scale), so units cancel.
-    // Returns |Z| × 1000 to maintain integer precision.
-    if stddev == 0 { return 0; }
+    if stddev == 0 { return false; }
     let diff = if value > mean { value - mean } else { mean - value };
-    diff * 1000 / stddev  // ×1000 for 3 decimal places
+    // Cross-multiply instead of dividing to maintain precision and avoid zero-division
+    diff.saturating_mul(1000) > stddev.saturating_mul(3000)
 }
 
-let z_bytes = zscore_scaled(
+let z_b_exceeds = zscore_exceeds_3(
     telemetry.flow_bytes_s_milli,
     baselines.mean_bytes_s_milli,
     baselines.stddev_bytes_s_milli,
 );
-// 3.0 × 1000 = 3000
-if z_bytes > 3_000 || z_pkts > 3_000 {
+
+if z_b_exceeds || z_p_exceeds {
     triggered |= rules::ZSCORE_ANOMALY;
 }
 ```
