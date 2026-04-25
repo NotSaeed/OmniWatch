@@ -28,7 +28,7 @@
 #![no_main]
 
 use sha2::{Digest, Sha256};
-use verifier_core::{rules, HostBaselines, LodaModel, NetworkTelemetry, TelemetryInput, ThreatVerdict};
+use verifier_core::{rules, CusumModel, HostBaselines, LodaModel, NetworkTelemetry, TelemetryInput, ThreatVerdict};
 
 risc0_zkvm::guest::entry!(main);
 
@@ -215,6 +215,49 @@ fn loda_score(model: &LodaModel, t: &NetworkTelemetry) -> Option<i64> {
     Some(total_score)
 }
 
+// ── CUSUM C2 beacon evaluation (zero multiplication) ─────────────────────────
+
+/// Stage 3 of the Zero-MUL Time-Domain CUSUM pipeline.
+///
+/// The Python host executes Stages 0–2 (multiplierless comb pre-filter,
+/// epoch-folded L1 histogram) and injects the results as `b_n_fp14` (per-period
+/// L1 score for this record) and `cusum_states_fp14` (running S_{n-1} per period).
+///
+/// The guest proves Stage 3 — one DAS-CUSUM accumulator step per candidate period:
+///
+///     S_n[i] = max(0,  S_{n-1}[i]  +  B_n[i]  −  k)
+///
+/// Instruction breakdown on RV32IM:
+///   saturating_add  → ADD (with overflow guard — no MUL)
+///   saturating_sub  → SUB (with underflow guard)
+///   .max(0)         → conditional branch + register select (no MUL)
+///
+/// Zero `*` operators anywhere in this function.
+///
+/// Returns `true` when any period's accumulator exceeds `cusum_threshold_fp14`.
+/// Short-circuits immediately when `model.k == 0` (CUSUM not configured).
+#[inline]
+fn cusum_beacon(model: &CusumModel) -> bool {
+    if model.k == 0 {
+        return false;
+    }
+    let k_periods = model.k as usize;
+    for i in 0..k_periods {
+        if i >= model.b_n_fp14.len() || i >= model.cusum_states_fp14.len() {
+            break;
+        }
+        // S_n = max(0, S_{n-1} + B_n − k):  three ops, zero MUL.
+        let s_n = model.cusum_states_fp14[i]
+            .saturating_add(model.b_n_fp14[i])
+            .saturating_sub(model.cusum_k_fp14)
+            .max(0);
+        if s_n > model.cusum_threshold_fp14 {
+            return true;
+        }
+    }
+    false
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 fn main() {
@@ -387,6 +430,20 @@ fn evaluate(input: &TelemetryInput, input_hash: [u8; 32]) -> ThreatVerdict {
                 cat  = 5; // ANOMALY
                 conf = conf.max(72);
             }
+        }
+    }
+
+    // ── Rule 12: CUSUM C2 beacon (zero-MUL DAS-CUSUM) ────────────────────
+    // The Python host executes the multiplierless comb pre-filter (Stages 0/1)
+    // and epoch-folded L1 histogram (Stage 2), injecting per-period B_n scores
+    // and the running CUSUM state into CusumModel for this source IP's history.
+    // The guest proves Stage 3 only: S_n = max(0, S_{n-1} + B_n − k) > threshold.
+    // All arithmetic is ADD + SUB + MAX — zero `*` operators on the RV32IM path.
+    if cusum_beacon(&input.cusum) {
+        fired |= rules::CUSUM_BEACON;
+        if cat == 0 {
+            cat  = 5; // ANOMALY — periodic C2 beaconing pattern
+            conf = conf.max(77);
         }
     }
 

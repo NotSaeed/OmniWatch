@@ -91,6 +91,12 @@ pub mod rules {
     /// Supersedes ISOLATION_FOREST_ANOMALY (removed in v4): eliminates tree-traversal
     /// pointer jumps; projection weights ∈ {-1, 0, 1} reduce inner-loop to add/subtract.
     pub const LODA_ANOMALY: u32 = 1 << 12;
+    /// CUSUM C2 beacon: DAS-CUSUM accumulator S_n exceeds threshold on at least one
+    /// candidate beacon period.  Fires only when `CusumModel.k > 0`.
+    /// Stage 3 (accumulator update) is proved in the zkVM guest; Stages 0–2
+    /// (multiplierless comb pre-filter + epoch-folded L1 histogram) are computed
+    /// by the Python host and injected as `b_n_fp14` and `cusum_states_fp14`.
+    pub const CUSUM_BEACON: u32 = 1 << 13;
 }
 
 // ── Network telemetry input ──────────────────────────────────────────────────
@@ -228,21 +234,65 @@ pub struct LodaModel {
     pub anomaly_threshold_fp10: i64,
 }
 
+// ── CUSUM beacon detector (stage 3 inputs, flattened for zkVM) ───────────────
+
+/// Zero-MUL Time-Domain CUSUM Beacon Detector — stage 3 inputs from Python host.
+///
+/// Detects periodic C2 beaconing via a 4-stage split-brain pipeline:
+///
+///   Stage 0/1 — Multiplierless comb pre-filter (Python host, ADD/SUB only):
+///               Δt[n] = t[n] − t[n−1]   (first-difference inter-arrival times)
+///
+///   Stage 2   — Epoch-folded L1 histogram (Python host):
+///               phase[n]   = t[n] mod P_i
+///               bin[n]     = phase[n] >> shift_val   (bitshift ≡ divide by bin width)
+///               L1[P_i]    = Σ_j | C_j − (N >> shift_val) |
+///               B_n[i]     = floor(L1[P_i] × 2^14)
+///
+///   Stage 3   — DAS-CUSUM accumulator (Rust guest, proved in zkVM):
+///               S_n[i] = max(0,  S_{n-1}[i]  +  B_n[i]  −  k)
+///               Fire CUSUM_BEACON when S_n[i] > cusum_threshold_fp14
+///
+/// The Rust guest executes Stage 3 only: saturating_add + saturating_sub + max(0).
+/// Zero `*` operators anywhere in the guest path — ADD, SUB, and MAX only.
+///
+/// When `k == 0` the guest skips Rule 12 entirely.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CusumModel {
+    /// Number of candidate beacon periods tracked simultaneously.
+    pub k: u32,
+    /// Pre-computed Q14 L1 epoch-fold scores for this record, one per period.
+    /// B_n[i] = floor( Σ_j|C_j − (N >> shift_val)| × 2^14 ) for period i.
+    /// Python host executes Stages 0–2; guest uses these values in Stage 3 only.
+    pub b_n_fp14: Vec<i64>,
+    /// Running CUSUM accumulator state from the previous record, one per period.
+    /// S_{n-1}[i] in Q14 encoding; initialised to 0 at session start per source IP.
+    pub cusum_states_fp14: Vec<i64>,
+    /// CUSUM drift parameter k in Q14: floor(allowance × 2^14).
+    /// Calibrated by the Python pipeline as K_FACTOR × median L1 under benign traffic.
+    pub cusum_k_fp14: i64,
+    /// Detection threshold in Q14: floor(threshold × 2^14).
+    /// S_n[i] > cusum_threshold_fp14 → CUSUM_BEACON fires for period i.
+    pub cusum_threshold_fp14: i64,
+}
+
 // ── Combined guest input ──────────────────────────────────────────────────────
 
 /// The struct the zkVM guest reads from the input stream.
 ///
-/// Bundling telemetry + baselines + LODA model in one struct keeps the guest's
-/// `env::read` call count at 1, which is cheaper in the STARK proof than two reads.
+/// Bundling telemetry + baselines + LODA + CUSUM in one struct keeps the guest's
+/// `env::read` call count at 1, which is cheaper in the STARK proof than multiple reads.
 ///
 /// For records with no available baselines, set all `HostBaselines` fields to
 /// zero — the guest falls back to absolute threshold rules.
 /// For records with no LODA model, set `loda.k = 0` — the guest skips Rule 11.
+/// For records with no CUSUM context, set `cusum.k = 0` — the guest skips Rule 12.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetryInput {
     pub telemetry: NetworkTelemetry,
     pub baselines: HostBaselines,
     pub loda:      LodaModel,
+    pub cusum:     CusumModel,
 }
 
 // ── Threat verdict output (committed to zkVM journal) ────────────────────────

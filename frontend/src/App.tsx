@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 
 import { api } from "./lib/api";
-import type { Alert, CicidsPlaybookLog, CicidsStats, CisoPipelineSummary, DashboardStats, PipelineCompletion, PipelineWsMessage, WsMessage } from "./lib/types";
+import type { Alert, CicidsPlaybookLog, CicidsStats, CisoPipelineSummary, DashboardStats, PipelineAlert, PipelineCompletion, PipelineWsMessage, WsMessage } from "./lib/types";
 import { useWebSocket } from "./hooks/useWebSocket";
 
 
@@ -160,6 +160,9 @@ export default function App() {
   // Active session context — drives session-scoped data fetching across views.
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeFileName,  setActiveFileName]  = useState<string | null>(null);
+
+  // Selected pipeline alert for Remediation Bridge (Review & Sign → Trust Chain)
+  const [selectedAlert, setSelectedAlert] = useState<PipelineAlert | null>(null);
 
   // Clear-data two-step confirm
   const [confirmClear,   setConfirmClear]   = useState(false);
@@ -338,9 +341,10 @@ export default function App() {
       }
       qc.invalidateQueries({ queryKey: ["stats"] });
       qc.invalidateQueries({ queryKey: ["botsv3-dashboard"] });
-      // Bust the session-scoped key that was active when the pipeline started
+      // Bust both session-scoped stats and the logs query used by LogExplorer
       qc.invalidateQueries({ queryKey: ["cicids-stats"] });
       qc.invalidateQueries({ queryKey: ["pipeline-alerts"] });
+      qc.invalidateQueries({ queryKey: ["logs", sid] });
     }
   }, [qc]);
 
@@ -710,7 +714,13 @@ export default function App() {
 
           {activePage === "logexplorer" && (
             <div className="h-[calc(100vh-53px)] flex flex-col">
-              <LogExplorer sessionId={activeSessionId} />
+              <LogExplorer
+                sessionId={activeSessionId}
+                onReviewSign={(alert) => {
+                  setSelectedAlert(alert);
+                  setActivePage("trustchain");
+                }}
+              />
             </div>
           )}
 
@@ -720,12 +730,73 @@ export default function App() {
 
           {activePage === "trustchain" && (
             <div className="p-3 space-y-3">
-              {/* 3D DAG */}
-              <div className="rounded-xl overflow-hidden" style={{ background: "#0a0a0d", border: "1px solid #1a1a1f" }}>
-                <TrustChainDAG
-                  nodes={dagNodes}
-                  pipelineHash={pipelineCompletion?.chain_tip_hash ?? undefined}
-                />
+              {/* DAG + Payload Detail side-by-side when an alert is selected */}
+              <div className={selectedAlert ? "grid grid-cols-3 gap-3" : ""}>
+                <div className={`rounded-xl overflow-hidden ${selectedAlert ? "col-span-2" : ""}`}
+                     style={{ background: "#0a0a0d", border: "1px solid #1a1a1f" }}>
+                  <TrustChainDAG
+                    nodes={dagNodes}
+                    pipelineHash={pipelineCompletion?.chain_tip_hash ?? undefined}
+                  />
+                </div>
+
+                {/* Payload Detail — shown when navigated via Review & Sign */}
+                {selectedAlert && (
+                  <div className="rounded-xl p-4 space-y-3 flex flex-col"
+                       style={{ background: "#0d0d10", border: "1px solid rgba(217,70,239,0.25)" }}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-violet-500" />
+                        <span className="text-[10px] uppercase tracking-widest font-semibold" style={{ color: "#d946ef" }}>
+                          Payload Detail
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => setSelectedAlert(null)}
+                        className="text-slate-600 hover:text-slate-300 text-xs transition-colors"
+                      >
+                        ✕
+                      </button>
+                    </div>
+
+                    <div className="space-y-2 flex-1">
+                      {[
+                        { label: "Source IP",     value: selectedAlert.source_ip ?? "—" },
+                        { label: "Dest IP",        value: selectedAlert.dest_ip ?? "—" },
+                        { label: "Dest Port",      value: String(selectedAlert.dest_port ?? "—") },
+                        { label: "Protocol",       value: selectedAlert.protocol ?? "—" },
+                        { label: "Severity",       value: selectedAlert.severity },
+                        { label: "Label",          value: selectedAlert.label },
+                        { label: "MITRE Technique",value: selectedAlert.mitre_technique ?? "—" },
+                        { label: "MITRE Tactic",   value: selectedAlert.mitre_name ?? "—" },
+                        { label: "Chain Hash",     value: selectedAlert.chain_hash ? `${selectedAlert.chain_hash.substring(0, 16)}…` : "—" },
+                        { label: "Ingested At",    value: new Date(selectedAlert.ingested_at).toLocaleString() },
+                      ].map(({ label, value }) => (
+                        <div key={label}>
+                          <p className="text-[9px] uppercase tracking-widest font-semibold" style={{ color: "#4d5060" }}>{label}</p>
+                          <p className="text-[11px] font-mono mt-0.5 break-all" style={{ color: "#c5c7d4" }}>{value}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        if (selectedAlert.source_ip) {
+                          handleProve(selectedAlert.id, selectedAlert.label, selectedAlert.source_ip);
+                        }
+                      }}
+                      disabled={!selectedAlert.source_ip}
+                      className="w-full py-2 rounded text-xs font-bold transition-all active:scale-95 disabled:opacity-40"
+                      style={{
+                        background: "linear-gradient(135deg,rgba(217,70,239,0.20),rgba(6,182,212,0.20))",
+                        border: "1px solid rgba(217,70,239,0.40)",
+                        color: "#e0aaff",
+                      }}
+                    >
+                      ⚡ Generate STARK Proof & Sign
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Info cards + ABC toggle */}
@@ -875,6 +946,15 @@ function DashboardPage({
       <StatsBar stats={stats} />
       <StatsCards stats={stats} pipelineCiso={pipelineCiso} />
 
+      {/* ── Pipeline Executive Brief — 3-row analyst briefing ──────────────── */}
+      {pipelineCiso && (
+        <PipelineExecutiveBrief
+          pipelineCiso={pipelineCiso}
+          cicidsStats={cicidsStats}
+          botsData={botsData}
+        />
+      )}
+
       {/* Purple Team Metrics strip */}
       <div className="px-3 pt-2 pb-0">
         <PanelErrorBoundary>
@@ -882,7 +962,7 @@ function DashboardPage({
         </PanelErrorBoundary>
       </div>
 
-      {/* Primary chart grid */}
+      {/* Secondary analysis grid — always visible */}
       <div className="grid grid-cols-12 gap-2.5 p-3">
         {/* Left sidebar */}
         <aside className="col-span-3 space-y-2.5">
@@ -916,21 +996,25 @@ function DashboardPage({
             </PanelErrorBoundary>
           </BentoPanel>
 
-          <div className="grid grid-cols-2 gap-2.5">
-            <BentoPanel title="Top Attack Vectors">
-              <PanelErrorBoundary>
-                <ThreatVectorChart
-                  cicidsStats={cicidsStats}
-                  botsTactics={botsData?.mitre_tactics}
-                />
-              </PanelErrorBoundary>
-            </BentoPanel>
-            <BentoPanel title="Threat Activity — 24h Timeline">
-              <PanelErrorBoundary>
-                <ThreatTimelineChart cicidsStats={cicidsStats} />
-              </PanelErrorBoundary>
-            </BentoPanel>
-          </div>
+          {/* Attack vectors + timeline — only when no pipeline brief (avoids duplication) */}
+          {!pipelineCiso && (
+            <div className="grid grid-cols-2 gap-2.5">
+              <BentoPanel title="Top Attack Vectors">
+                <PanelErrorBoundary>
+                  <ThreatVectorChart
+                    cicidsStats={cicidsStats}
+                    botsTactics={botsData?.mitre_tactics}
+                    pipelineCiso={pipelineCiso}
+                  />
+                </PanelErrorBoundary>
+              </BentoPanel>
+              <BentoPanel title="Threat Activity — 24h Timeline">
+                <PanelErrorBoundary>
+                  <ThreatTimelineChart cicidsStats={cicidsStats} />
+                </PanelErrorBoundary>
+              </BentoPanel>
+            </div>
+          )}
         </main>
       </div>
 
@@ -948,6 +1032,274 @@ function DashboardPage({
         </BentoPanel>
       </div>
     </>
+  );
+}
+
+// ── AI Executive Summary text generator ──────────────────────────────────────
+
+function generateAiSummary(ciso: CisoPipelineSummary): string {
+  const total = ciso.total_alerts;
+  if (total === 0) return "No threat events detected in this pipeline session.";
+
+  const crit = ciso.by_severity?.CRITICAL ?? 0;
+  const high = ciso.by_severity?.HIGH     ?? 0;
+  const med  = ciso.by_severity?.MEDIUM   ?? 0;
+  const topLabel = ciso.top_labels?.[0];
+  const topIp    = ciso.top_attacker_ips?.[0];
+  const topTech  = ciso.top_techniques?.[0];
+  const techCount = ciso.top_techniques?.length ?? 0;
+
+  let text = `Pipeline analysis complete. Detected ${total.toLocaleString()} threat events`;
+  const sevParts: string[] = [];
+  if (crit > 0) sevParts.push(`${crit.toLocaleString()} CRITICAL`);
+  if (high > 0) sevParts.push(`${high.toLocaleString()} HIGH`);
+  if (med  > 0) sevParts.push(`${med.toLocaleString()} MEDIUM`);
+  if (sevParts.length > 0) text += ` — ${sevParts.join(", ")}`;
+  text += `.`;
+
+  if (topLabel) {
+    const pct = Math.round(topLabel.count / total * 100);
+    text += ` Dominant attack pattern: ${topLabel.label} (${topLabel.count.toLocaleString()} events · ${pct}% of detections).`;
+  }
+  if (topIp) {
+    text += ` Highest-volume threat source: ${topIp.ip} (${topIp.count.toLocaleString()} malicious flows).`;
+  }
+  if (techCount > 0 && topTech) {
+    text += ` Correlated ${techCount} MITRE ATT&CK technique${techCount > 1 ? "s" : ""} — top: ${topTech.name} (${topTech.id}).`;
+  }
+  if (ciso.analyst_hours_saved > 0) {
+    text += ` Automated triage reclaimed ${ciso.analyst_hours_saved.toFixed(1)} analyst hours`;
+    if (ciso.cost_avoided_usd > 0) {
+      text += `, avoiding $${ciso.cost_avoided_usd.toLocaleString()} in operational costs`;
+    }
+    text += `.`;
+  }
+  return text;
+}
+
+// ── CISO KPI card ─────────────────────────────────────────────────────────────
+
+function CisoKpiCard({
+  label, value, sub, accent, icon,
+}: {
+  label:  string;
+  value:  string;
+  sub:    string;
+  accent: string;
+  icon:   string;
+}) {
+  return (
+    <div
+      className="flex-1 rounded-lg p-3 flex flex-col justify-between min-h-0"
+      style={{
+        background: "#0d0d10",
+        border:    `1px solid ${accent}30`,
+        borderTop: `2px solid ${accent}`,
+      }}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[9px] uppercase tracking-widest font-semibold truncate"
+             style={{ color: accent + "99" }}>
+            {label}
+          </p>
+          <p className="text-xl font-bold font-mono mt-1 leading-none tabular-nums"
+             style={{ color: accent }}>
+            {value}
+          </p>
+        </div>
+        <span className="text-lg shrink-0 opacity-35 mt-0.5">{icon}</span>
+      </div>
+      <p className="text-[9px] mt-2 truncate" style={{ color: "#4d5060" }}>{sub}</p>
+    </div>
+  );
+}
+
+// ── Pipeline Executive Brief ──────────────────────────────────────────────────
+
+function PipelineExecutiveBrief({
+  pipelineCiso, cicidsStats, botsData,
+}: {
+  pipelineCiso: CisoPipelineSummary;
+  cicidsStats:  CicidsStats | undefined;
+  botsData:     any | undefined;
+}) {
+  const summary = generateAiSummary(pipelineCiso);
+  const sevEntries = Object.entries(pipelineCiso.by_severity ?? {})
+    .filter(([, v]) => (v as number) > 0)
+    .sort((a, b) => (b[1] as number) - (a[1] as number));
+
+  return (
+    <div className="px-3 pt-3 pb-1 space-y-2.5">
+
+      {/* ── Row 1: AI Analysis box + 3 CISO KPI cards ───────────────────── */}
+      <div className="grid gap-2.5" style={{ gridTemplateColumns: "1fr 260px" }}>
+
+        {/* AI Analysis panel */}
+        <div
+          className="rounded-lg p-4 flex flex-col gap-3"
+          style={{
+            background: "linear-gradient(135deg,rgba(14,18,28,0.97) 0%,rgba(10,12,20,0.97) 100%)",
+            border: "1px solid rgba(217,70,239,0.22)",
+            boxShadow: "inset 0 0 60px rgba(217,70,239,0.025)",
+          }}
+        >
+          {/* Header row */}
+          <div className="flex items-center gap-2">
+            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" fill="none" aria-hidden="true">
+              <defs>
+                <linearGradient id="brief-sparkle" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%"   stopColor="#d946ef" />
+                  <stop offset="100%" stopColor="#06b6d4" />
+                </linearGradient>
+              </defs>
+              <path d="M12 2 L13.8 9.2 L21 12 L13.8 14.8 L12 22 L10.2 14.8 L3 12 L10.2 9.2 Z"
+                    fill="url(#brief-sparkle)" />
+              <path d="M19.5 4 L20.2 6.3 L22.5 7 L20.2 7.7 L19.5 10 L18.8 7.7 L16.5 7 L18.8 6.3 Z"
+                    fill="url(#brief-sparkle)" opacity="0.6" />
+            </svg>
+            <span className="text-[10px] uppercase tracking-widest font-semibold ai-gradient">
+              AI Executive Analysis
+            </span>
+            <div className="flex-1" />
+            <span
+              className="text-[9px] font-mono px-2 py-0.5 rounded-full"
+              style={{
+                background: "rgba(114,200,17,0.10)",
+                border: "1px solid rgba(114,200,17,0.30)",
+                color: "#72c811",
+              }}
+            >
+              ● Pipeline Complete
+            </span>
+          </div>
+
+          {/* Summary text */}
+          <p className="text-[12px] leading-relaxed" style={{ color: "#a8abc0" }}>
+            {summary}
+          </p>
+
+          {/* Severity breakdown pills */}
+          {sevEntries.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 pt-0.5">
+              {sevEntries.map(([sev, cnt]) => {
+                const color =
+                  sev === "CRITICAL" ? "#e84d4d"
+                  : sev === "HIGH"   ? "#f4a926"
+                  : sev === "MEDIUM" ? "#facc15"
+                  : sev === "LOW"    ? "#72c811"
+                  : "#6b6e80";
+                return (
+                  <span
+                    key={sev}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-bold"
+                    style={{
+                      background: `${color}14`,
+                      border:     `1px solid ${color}40`,
+                      color,
+                    }}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0"
+                          style={{ background: color, opacity: 0.8 }} />
+                    {sev} · {(cnt as number).toLocaleString()}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* CISO KPI column */}
+        <div className="flex flex-col gap-2">
+          <CisoKpiCard
+            label="Alerts Found"
+            value={pipelineCiso.total_alerts.toLocaleString()}
+            sub="Pipeline detections · all severities"
+            accent="#e84d4d"
+            icon="⚠"
+          />
+          <CisoKpiCard
+            label="Analyst Hrs Saved"
+            value={`${pipelineCiso.analyst_hours_saved.toFixed(1)} h`}
+            sub="Via automated triage"
+            accent="#72c811"
+            icon="⏱"
+          />
+          <CisoKpiCard
+            label="Cost Avoided"
+            value={`$${pipelineCiso.cost_avoided_usd.toLocaleString()}`}
+            sub="@ $50/hr analyst rate"
+            accent="#00d4c8"
+            icon="$"
+          />
+        </div>
+      </div>
+
+      {/* ── Row 2: Top Threat Sources + Top Attack Vectors ───────────────── */}
+      <div className="grid grid-cols-2 gap-2.5">
+        <BentoPanel title="Top Threat Sources (IPs)">
+          <PanelErrorBoundary>
+            {pipelineCiso.top_attacker_ips.length > 0 ? (
+              <TopAttackerIpsWidget ips={pipelineCiso.top_attacker_ips} />
+            ) : (
+              <div className="flex items-center justify-center h-24 text-xs" style={{ color: "#4d5060" }}>
+                No attacker IP data in this session
+              </div>
+            )}
+          </PanelErrorBoundary>
+        </BentoPanel>
+        <BentoPanel title="Top Attack Vectors — MITRE Techniques">
+          <PanelErrorBoundary>
+            <ThreatVectorChart
+              cicidsStats={cicidsStats}
+              botsTactics={botsData?.mitre_tactics}
+              pipelineCiso={pipelineCiso}
+            />
+          </PanelErrorBoundary>
+        </BentoPanel>
+      </div>
+
+      {/* ── Row 3: Hourly Activity Trends (full width) ───────────────────── */}
+      <BentoPanel title="Threat Activity Trends — Hourly Distribution">
+        <PanelErrorBoundary>
+          <ThreatTimelineChart cicidsStats={cicidsStats} />
+        </PanelErrorBoundary>
+      </BentoPanel>
+
+    </div>
+  );
+}
+
+// ── Top Attacker IPs widget ───────────────────────────────────────────────────
+
+function TopAttackerIpsWidget({ ips }: { ips: { ip: string; count: number }[] }) {
+  const top = ips.slice(0, 8);
+  const max = Math.max(1, ...top.map(d => d.count));
+  return (
+    <div className="space-y-2 pt-1">
+      {top.map((d, i) => (
+        <div key={d.ip} className="flex items-center gap-2">
+          <span className="text-[9px] font-mono w-4 shrink-0 text-right tabular-nums" style={{ color: "#4d5060" }}>
+            {i + 1}
+          </span>
+          <span className="text-[10px] font-mono flex-1 truncate" style={{ color: "#c5c7d4" }}>{d.ip}</span>
+          <div className="w-16 h-2 rounded-sm overflow-hidden shrink-0" style={{ background: "#0d0d10" }}>
+            <div
+              className="h-full rounded-sm"
+              style={{
+                width: `${(d.count / max) * 100}%`,
+                background: "#e84d4d",
+                opacity: 0.75,
+                boxShadow: "0 0 4px rgba(232,77,77,0.4)",
+              }}
+            />
+          </div>
+          <span className="text-[9px] font-mono tabular-nums w-8 text-right shrink-0" style={{ color: "#e84d4d" }}>
+            {d.count.toLocaleString()}
+          </span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -972,16 +1324,30 @@ function vectorColor(label: string): string {
   return "#72c811";
 }
 
-function ThreatVectorChart({ cicidsStats, botsTactics }: { cicidsStats: CicidsStats | undefined; botsTactics?: any[] }) {
-  let entries = Object.entries(cicidsStats?.by_label ?? {})
-    .filter(([l]) => l.toUpperCase() !== "BENIGN")
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 8)
-    .map(([label, count]) => ({ label, count }));
+function ThreatVectorChart({
+  cicidsStats, botsTactics, pipelineCiso,
+}: {
+  cicidsStats:  CicidsStats | undefined;
+  botsTactics?: any[];
+  pipelineCiso?: CisoPipelineSummary;
+}) {
+  // Priority: pipeline MITRE techniques → CIC-IDS by_label → BOTSv3 tactics
+  let entries: { label: string; count: number }[];
 
-  // Fallback to BOTS tactics if CIC-IDS is empty
-  if (entries.length === 0 && botsTactics && botsTactics.length > 0) {
-    entries = botsTactics.map(t => ({ label: t.tactic, count: t.count }));
+  if (pipelineCiso && pipelineCiso.top_techniques.length > 0) {
+    entries = pipelineCiso.top_techniques
+      .slice(0, 8)
+      .map(t => ({ label: t.name || t.id, count: t.count }));
+  } else {
+    entries = Object.entries(cicidsStats?.by_label ?? {})
+      .filter(([l]) => l.toUpperCase() !== "BENIGN")
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([label, count]) => ({ label, count }));
+    // Fallback to BOTS tactics if CIC-IDS is empty
+    if (entries.length === 0 && botsTactics && botsTactics.length > 0) {
+      entries = botsTactics.map(t => ({ label: t.tactic, count: t.count }));
+    }
   }
 
   if (entries.length === 0) {

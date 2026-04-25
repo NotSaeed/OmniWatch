@@ -16,7 +16,7 @@
 6. [Fixed-Point Arithmetic: Q14 Encoding](#6-fixed-point-arithmetic-q14-encoding)  
 7. [Detection Pillar I — DDSketch Volumetric Baselining](#7-detection-pillar-i--ddsketch-volumetric-baselining)  
 8. [Detection Pillar II — Isolation Forest Multivariate Anomaly](#8-detection-pillar-ii--isolation-forest-multivariate-anomaly)  
-9. [Detection Pillar III — Goertzel C2 Beaconing Detector](#9-detection-pillar-iii--goertzel-c2-beaconing-detector)  
+9. [Detection Pillar III — Zero-MUL Time-Domain CUSUM Pipeline](#9-detection-pillar-iii--zero-mul-time-domain-cusum-pipeline)  
 10. [The Dual-Verification SOAR Pipeline](#10-the-dual-verification-soar-pipeline)  
 11. [SHA-256 Hash Chain Integrity Layer](#11-sha-256-hash-chain-integrity-layer)  
 12. [Enterprise AI-SOC Ingestion Pipeline](#12-enterprise-ai-soc-ingestion-pipeline)  
@@ -92,8 +92,9 @@ The Pi 4 serializes each captured Modbus flow into a `TelemetryInput` struct enc
 ```
 TelemetryInput {
     telemetry: NetworkTelemetry,   // 61-byte base struct
-    baselines: HostBaselines,      // per-host ML baselines
-    forest:    IsolationForestModel // flattened IF trees
+    baselines: HostBaselines,      // per-host ML baselines (Z-score / DDSketch)
+    loda:      LodaModel,          // LODA anomaly detector (Rule 11)
+    cusum:     CusumModel,         // DAS-CUSUM beacon detector (Rule 12)
 }
 ```
 
@@ -123,7 +124,8 @@ WebAuthn's Relying Party ID (RPID) requires a registerable domain. The command n
 │                    PYTHON HOST — Analysis Engine                         │
 │  normalize_chunk()   ←──── deduplicate headers, coerce types            │
 │  DDSketchBaseliner   ←──── accumulate p99 per-session                   │
-│  ForestBaseliner     ←──── online IsolationForest fit (max 200K rows)   │
+│  LodaBaseliner       ←──── sparse random projections, 1D histograms     │
+│  CusumBaseliner      ←──── epoch-fold L1 + DAS-CUSUM (Stages 0–2)      │
 │  zscore_baseline_filter() ←── flag statistical outliers                 │
 │  SHA-256 Hash Chain  ←──── per-alert + per-batch + chain-tip hashes     │
 │              │                                                           │
@@ -141,7 +143,7 @@ WebAuthn's Relying Party ID (RPID) requires a registerable domain. The command n
 ┌─────────────────────────────────▼───────────────────────────────────────┐
 │              RUST GUEST zkVM  (verifier/methods/guest/src/main.rs)      │
 │  Pure-integer RV32IM — zero f32/f64                                     │
-│  Rule evaluation: 11 rules, 13 bit-flags in ThreatVerdict               │
+│  Rule evaluation: 12 rules, 14 bit-flags in ThreatVerdict               │
 │  Commits to journal: input_hash | is_threat | category | confidence_pct │
 └─────────────────────────────────────────────────────────────────────────┘
                                   │
@@ -184,9 +186,13 @@ This split is non-negotiable: the RISC Zero zkVM implements the RV32IM ISA, whic
 Python (float64)                     Rust Guest (i32/u64 integers only)
 ─────────────────                    ─────────────────────────────────
 DDSketch.p99_bytes_s   ──fp14────►   ddsketch_threshold_fp14  (u64)
-IsolationForest nodes  ──fp14────►   nodes[i*4+1]: threshold_fp14 (i32)
+LODA bin edges         ──fp14────►   bin_edges_fp14[k × (n_bins+1)] (i64)
+LODA bin scores        ──Q10─────►   bin_scores_fp10[k × n_bins]    (i32)
 mean_bytes_s (float)   ──×1000───►   mean_bytes_s_milli (u64)
 stddev_bytes_s (float) ──×1000───►   stddev_bytes_s_milli (u64)
+CUSUM epoch-fold L1    ──fp14────►   b_n_fp14[k]              (i64)
+CUSUM running state    ──fp14────►   cusum_states_fp14[k]     (i64)
+CUSUM drift k          ──fp14────►   cusum_k_fp14             (i64)
 ```
 
 The encoding rule for the ×1000 path (Z-score baselines) is:
@@ -459,67 +465,146 @@ On RV32IM, `match { 1 => z += x, -1 => z -= x, _ => {} }` compiles to two condit
 
 ---
 
-## 9. Detection Pillar III — Goertzel C2 Beaconing Detector
+## 9. Detection Pillar III — Zero-MUL Time-Domain CUSUM Pipeline
 
-### 9.1 Algorithm
+> **v5 upgrade:** The Goertzel IIR detector was superseded by this pipeline. Full deprecation rationale is in §17.6.
 
-The Goertzel algorithm is a **second-order IIR filter** optimized to compute a single DFT bin without computing the full FFT. This is exploited to detect Command-and-Control (C2) beaconing: periodic connection attempts at a fixed interval frequency `f_target`.
+### 9.1 Design Goal
 
-**Target bin:**
+Detect periodic C2 beaconing — repeated inter-arrival intervals clustering around a candidate period P — using only ADD, SUB, and bitwise operations in the Rust zkVM guest. The pipeline is split across four stages: Stages 0/1 and 2 execute in the Python host; Stage 3 alone runs inside the zkVM and produces the cryptographic proof.
 
-```
-k = round( N × f_target / f_s )
-```
+### 9.2 Four-Stage Pipeline
 
-Where `N` = number of samples in the analysis window, `f_s` = sampling rate (observations per second).
+#### Stage 0/1 — Multiplierless Comb Pre-Filter (Python host)
 
-**Goertzel IIR recurrence:**
+For each source IP, accumulate inter-arrival timestamps chronologically. Compute the first-difference sequence — equivalent to a single-pole comb filter with unit delay:
 
 ```
-q₀[n] = 2·cos(2πk/N)·q₁[n−1] − q₂[n−1] + x[n]
-q₂[n] = q₁[n−1]
-q₁[n] = q₀[n]
+Δt[n] = t[n] − t[n−1]    (pure subtraction — no MUL)
 ```
 
-**Power at target frequency** (evaluated once after all N samples):
+This removes the DC offset from the timestamp stream, leaving only the periodic components that distinguish beaconing from random arrival processes. All arithmetic is ADD/SUB — zero MUL instructions.
+
+#### Stage 2 — Epoch-Folded L1 Histogram (Python host)
+
+For each candidate beacon period P_i (µs):
 
 ```
-P = q₁² − q₁·q₂·2·cos(2πk/N) + q₂²
+phase[n]    = t[n] mod P_i             (modulo maps timestamp into [0, P_i))
+bin_idx[n]  = phase[n] >> shift_val    (bitshift ≡ divide by bin_width; no MUL)
+C[j]        = count of observations in bin j
+expected    = N >> shift_val           (bitshift approximates N / n_bins)
+L1[P_i]    = Σ_j | C[j] − expected |  (sum of absolute deviations from uniform)
+B_n[i]      = floor( L1[P_i] × 2^14 ) (Q14 encoding for Rust guest)
 ```
 
-### 9.2 Integer Implementation in Rust Guest
+Where `shift_val = log₂(n_bins) = 4` for `n_bins = 16`. A beaconing source concentrates observations in one or two bins, producing a large L1 score; a benign random-arrival source distributes uniformly, producing a small L1 score.
 
-The cosine term `2·cos(2πk/N)` is pre-computed by the Python host as a Q14 integer coefficient:
+The three candidate periods tracked simultaneously:
+
+| Index | Period | Target threat |
+|---|---|---|
+| 0 | 60 s | Common RAT heartbeat |
+| 1 | 300 s | Low-and-slow APT beacon |
+| 2 | 600 s | Long-interval C2 check-in |
+
+#### Stage 3 — DAS-CUSUM Accumulator (Rust guest, proved in zkVM)
+
+Applies the **Page's DAS-CUSUM** (Decision-theoretic Adaptive Sum) formula independently for each candidate period:
 
 ```
-c_int = floor( 2·cos(2πk/N) × 2^14 )
+S_n[i] = max( 0,  S_{n-1}[i]  +  B_n[i]  −  k )
 ```
 
-The Rust guest runs the IIR with pure integer operations:
+Where:
+- `S_{n-1}[i]` — running accumulator from the previous record (Q14, per source IP)
+- `B_n[i]` — epoch-fold L1 score for this record and period (Q14)
+- `k` — drift parameter (Q14): calibrated as `K_FACTOR × median(L1)` under benign traffic
+- `S_n[i] > cusum_threshold_fp14` → **CUSUM_BEACON** fires (bit 13)
+
+**Rust instruction count per period:**
+
+```
+saturating_add  → ADD with overflow guard   (zero MUL)
+saturating_sub  → SUB with underflow guard
+.max(0)         → conditional branch + register select
+```
+
+Zero `*` operators appear anywhere in this path on RV32IM.
+
+### 9.3 Python Host — `CusumBaseliner`
+
+```python
+class CusumBaseliner:
+    PERIODS_US   = [60_000_000, 300_000_000, 600_000_000]
+    N_BINS       = 16       # power-of-2 → bitshift replaces division
+    K_FACTOR     = 0.5      # drift = K_FACTOR × median L1 under benign
+    THRESHOLD    = 10.0     # real-valued; Q14-encoded for guest
+
+    def update(self, df):
+        # Accumulate timestamps per source IP
+
+    def fit(self):
+        # Calibrate k = K_FACTOR × median(L1 scores across all IPs and periods)
+
+    def b_n_for_ip(self, source_ip) -> list[int]:
+        # Stage 2: epoch-fold → L1 score → Q14 encode → one int per period
+
+    def cusum_state_for_ip(self, source_ip) -> list[int]:
+        # Return running Q14 S_{n-1} per period for this source IP
+
+    def advance_state(self, source_ip, b_n_fp14):
+        # Mirror Stage 3 in Python to keep host state synchronized with guest
+
+    def payload(self) -> str:
+        # JSON: {k, n_bins, shift_val, periods_us, cusum_k_fp14, cusum_threshold_fp14}
+```
+
+The `payload()` output is stored in `pipeline_sessions.cusum_payload`. Per-record `b_n_fp14` and `cusum_states_fp14` are computed at STARK-proof time via `b_n_for_ip()` and `cusum_state_for_ip()`.
+
+### 9.4 Rust Guest — `cusum_beacon` (Rule 12, bit 13)
 
 ```rust
-let mut q1: i64 = 0;
-let mut q2: i64 = 0;
-for &x in samples.iter() {
-    let q0 = ((c_int as i64 * q1) >> 14) - q2 + x as i64;
-    q2 = q1;
-    q1 = q0;
+fn cusum_beacon(model: &CusumModel) -> bool {
+    if model.k == 0 { return false; }
+    for i in 0..(model.k as usize) {
+        // S_n = max(0, S_{n-1} + B_n − k) :  ADD + SUB + MAX, zero MUL
+        let s_n = model.cusum_states_fp14[i]
+            .saturating_add(model.b_n_fp14[i])
+            .saturating_sub(model.cusum_k_fp14)
+            .max(0);
+        if s_n > model.cusum_threshold_fp14 {
+            return true;  // beacon detected on period i
+        }
+    }
+    false
 }
-// Power (no division by 2^28 needed — comparison to threshold handles scale)
-let power = q1 * q1 - ((c_int as i64 * q1 * q2) >> 14) + q2 * q2;
 ```
 
-The `>> 14` right-shift in the feedback path renormalizes the Q14 product back to the original scale, preventing exponential growth of the accumulator. The final power value remains in Q28 space (two Q14 multiplications), which is compared against a Q28-encoded threshold without further scaling.
+### 9.5 Split-Brain Information Flow
 
-### 9.3 Beaconing Detection Heuristic
+```
+Python host (float64)                     Rust guest (Q14 integers only)
+─────────────────────────────             ────────────────────────────────────────
+Stage 0/1: comb filter (Δt)
+Stage 2: epoch-fold L1 score    ─Q14──►  b_n_fp14[k]       (B_n per period)
+Running CUSUM state             ─Q14──►  cusum_states_fp14[k]  (S_{n-1})
+Calibrated drift k              ─Q14──►  cusum_k_fp14
+Alert threshold                 ─Q14──►  cusum_threshold_fp14
+                                          │
+                                          ▼ Stage 3 (proved):
+                                          S_n = max(0, S_{n-1} + B_n − k)
+                                          CUSUM_BEACON = S_n > threshold
+```
 
-C2 beaconing is characterized by a dominant periodic component in the inter-arrival time series. The Goertzel detector flags a flow if:
+### 9.6 Statistical Properties
 
-- `power > beacon_power_threshold` (energy at target frequency exceeds background noise)
-- `flow_duration > min_beacon_window` (sufficient observations for reliable frequency estimation)
-- The source IP has made repeated connections in the observation window
+The CUSUM accumulator has expected run length (ARL) characteristics:
+- **Under H₀ (benign):** L1 scores ≈ uniform fluctuation; drift k absorbs them; S_n stays near 0
+- **Under H₁ (beaconing):** L1 scores consistently above k; S_n increases monotonically until threshold
+- **Detection lag:** typically 3–8 records after beaconing begins, depending on interval regularity
 
-This is a **heuristic rule** — not a statistically optimal detector. The false-positive rate depends on the calibration of `beacon_power_threshold`, which is set conservatively in v1.
+The L1 histogram norm was chosen over L2 (chi-squared) because L1 requires only ADD/SUB/ABS in the Python host stage, and the per-bin absolute deviation is a natural fit for the bitshift-encoded expected count.
 
 ---
 
@@ -553,7 +638,7 @@ The guest runs on the RV32IM ISA — integer-only. Its evaluation proceeds as:
 
 1. `let input: TelemetryInput = env::read();`
 2. Compute `input_hash = sha2::Sha256(bincode::serialize(&input))`.
-3. Evaluate all 11 threat rules (§10.4) against `input.telemetry` and `input.baselines`.
+3. Evaluate all 12 threat rules (§10.4) against `input.telemetry`, `input.baselines`, and `input.cusum`.
 4. Commit `ThreatVerdict { input_hash, is_threat, category, confidence_pct, triggered_rules }` to the STARK journal.
 
 Step 2 ensures the STARK proof commits to the exact input that was evaluated. A verifier can replay the hash to confirm no data was substituted.
@@ -575,6 +660,7 @@ Step 2 ensures the STARK proof commits to the exact input that was evaluated. A 
 | 10 | `ZSCORE_ANOMALY` | \|Z\| > 3.0 on bytes/s or packet count (§10.4.1) |
 | 11 | `DDSKETCH_VOLUME` | current_scaled > ddsketch_threshold_fp14 (§7.3) |
 | 12 | `LODA_ANOMALY` | sum of per-projection –log(density) scores > anomaly_threshold_fp10 (§8.6) |
+| 13 | `CUSUM_BEACON` | DAS-CUSUM S_n > threshold on any candidate beacon period (§9.4) |
 
 #### 10.4.1 Z-Score Rule (integer, guest-side)
 
@@ -961,8 +1047,30 @@ Additionally, HDC prototype training (bundling operation over thousands of train
 
 ### 17.5 Kalman Filter (Considered, Not Implemented)
 
+### 17.6 Goertzel IIR Beaconing Detector (Evaluated — Superseded by CUSUM in v5)
+
 The Kalman filter was considered as a more principled state estimator for flow-rate baselining. Like RLS, the prediction step (`x̂ = F x̂_{k-1}`) and update step (`K = PH^T(HPH^T + R)^{-1}`) require matrix operations with guaranteed positive-definite covariance matrices. The same Q14 matrix-operation complexity argument as §17.4 applies. Deferred to v2.
 
 ---
 
-*Document last updated: 2026-04-25 — reflects verifier/core v4 (LODA upgrade, superseding Isolation Forest) and analysis_engine.py LODA baseliner.*
+**Rationale for initial design:** The Goertzel algorithm is a mathematically elegant, single-bin DFT evaluator. Pre-computing the cosine coefficient `c_int = floor(2·cos(2πk/N) × 2^14)` on the Python host and embedding it in the input appeared to satisfy the zero-float constraint for the guest. The Q14 IIR recurrence was clean:
+
+```rust
+let q0 = ((c_int as i64 * q1) >> 14) - q2 + x as i64;
+```
+
+**Supersession reason — MUL-per-sample and jitter intolerance:**
+
+1. **Multiply per sample.** The feedback term `c_int * q1` requires one `MUL` per input sample. For a window of N = 256 inter-arrival observations, this is 256 MUL instructions — one per record per candidate frequency. The CUSUM Stage 3 requires zero MUL instructions regardless of window size; its per-period cost is 3 operations (ADD, SUB, MAX) total.
+
+2. **Per-frequency MUL in power calculation.** The final power term `q1 * q1 - (c_int * q1 * q2 >> 14) + q2 * q2` requires 4 MUL instructions per candidate frequency, executed once per proof. With k = 3 candidate periods, this adds 12 MUL calls to every receipt.
+
+3. **Jitter intolerance.** The Goertzel algorithm measures spectral power at a single precise frequency bin. Real C2 beaconing exhibits ±5–15% jitter (TCP retransmissions, jitter buffers, host scheduling). Energy smeared across adjacent bins reduces the power at the target bin below the detection threshold. The epoch-folded L1 histogram is jitter-tolerant by design: ±15% jitter in a 60 s period shifts the phase bin by ≤ 2 bins, which still produces an elevated L1 score.
+
+4. **Window management complexity.** Goertzel requires a fixed-length sample window (N samples) before a decision can be made, requiring the Python host to buffer per-IP sample windows. CUSUM accumulates evidence incrementally — no window management needed.
+
+**CUSUM's solution:** Stages 0–2 run on the Python host with no MUL constraint (host is unrestricted floating-point). Stage 3 in the Rust guest is a single `saturating_add + saturating_sub + max(0)` per candidate period — three operations, zero MUL, regardless of the number of records processed.
+
+---
+
+*Document last updated: 2026-04-25 — reflects verifier/core v5 (CUSUM upgrade, superseding Goertzel) and analysis_engine.py CusumBaseliner.*

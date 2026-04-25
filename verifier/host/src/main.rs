@@ -17,7 +17,7 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use rayon::ThreadPoolBuilder;
 use methods::{VERIFIER_GUEST_ELF, VERIFIER_GUEST_ID};
 use risc0_zkvm::{default_prover, ExecutorEnv, Receipt};
-use verifier_core::{HostBaselines, IsolationForestModel, NetworkTelemetry, TelemetryInput, ThreatVerdict};
+use verifier_core::{CusumModel, HostBaselines, LodaModel, NetworkTelemetry, TelemetryInput, ThreatVerdict};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -104,9 +104,8 @@ struct Scenario {
     telemetry: NetworkTelemetry,
     /// Statistical baselines for adaptive Z-score / DDSketch rules.
     baselines: HostBaselines,
-    /// Flattened IsolationForest for Rule 11.
-    /// Use `IsolationForestModel::default()` when no forest is available.
-    forest:    IsolationForestModel,
+    /// LODA model for Rule 11.  Use `LodaModel::default()` (k=0) when not available.
+    loda:      LodaModel,
 }
 
 fn build_scenarios() -> Vec<Scenario> {
@@ -140,7 +139,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 stddev_pkts_milli:       9_000,
                 ddsketch_threshold_fp14: 0,
             },
-            forest: IsolationForestModel::default(),
+            loda: LodaModel::default(),
         },
 
         // ── Scenario 2: DNS Amplification DDoS ───────────────────────────
@@ -172,7 +171,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 stddev_pkts_milli:       25_000,
                 ddsketch_threshold_fp14: 3_276_800_000,
             },
-            forest: IsolationForestModel::default(),
+            loda: LodaModel::default(),
         },
 
         // ── Scenario 3: Stealth nmap SYN Probe ───────────────────────────
@@ -204,7 +203,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 stddev_pkts_milli:       30_000,
                 ddsketch_threshold_fp14: 0,
             },
-            forest: IsolationForestModel::default(),
+            loda: LodaModel::default(),
         },
 
         // ── Scenario 4: Outbound Data Exfiltration ────────────────────────
@@ -236,7 +235,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 stddev_pkts_milli:       300_000,
                 ddsketch_threshold_fp14: 9_830_400_000,
             },
-            forest: IsolationForestModel::default(),
+            loda: LodaModel::default(),
         },
 
         // ── Scenario 5: Benign HTTPS Session ─────────────────────────────
@@ -268,7 +267,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 stddev_pkts_milli:       40_000,
                 ddsketch_threshold_fp14: 3_276_800_000,
             },
-            forest: IsolationForestModel::default(),
+            loda: LodaModel::default(),
         },
 
         // ── Scenario 6: FTP Brute Force (Patator) ────────────────────────
@@ -300,7 +299,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 stddev_pkts_milli:       8_000,
                 ddsketch_threshold_fp14: 0,
             },
-            forest: IsolationForestModel::default(),
+            loda: LodaModel::default(),
         },
 
         // ── Scenario 7: Unauthorized Modbus PLC Write (ICS/SCADA) ────────
@@ -325,7 +324,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 epoch_nonce:        1_745_000_000,
             },
             baselines: HostBaselines::default(),
-            forest:   IsolationForestModel::default(),
+            loda:      LodaModel::default(),
         },
     ]
 }
@@ -346,7 +345,8 @@ fn prove_scenario(s: &Scenario) -> Result<()> {
     let input = TelemetryInput {
         telemetry: s.telemetry.clone(),
         baselines: s.baselines.clone(),
-        forest:    s.forest.clone(),
+        loda:      s.loda.clone(),
+        cusum:     CusumModel::default(), // no beacon history for hardcoded scenarios
     };
     let env = ExecutorEnv::builder()
         .write(&input)
@@ -496,15 +496,15 @@ fn prove_file_mode(path: &str) -> Result<()> {
 
     // Try deserializing as TelemetryInput (new format with baselines) first;
     // fall back to bare NetworkTelemetry (edge nodes that haven't upgraded yet).
-    let (telemetry, baselines) = if let Ok(input) = bincode::deserialize::<TelemetryInput>(&raw) {
+    let (telemetry, baselines, loda) = if let Ok(input) = bincode::deserialize::<TelemetryInput>(&raw) {
         println!("[*] Loaded TelemetryInput (with baselines) from file: {}", path);
-        (input.telemetry, input.baselines)
+        (input.telemetry, input.baselines, input.loda)
     } else {
         let t: NetworkTelemetry = bincode::deserialize(&raw)
             .context("Failed to deserialize NetworkTelemetry or TelemetryInput from bincode file")?;
         println!("[*] Loaded NetworkTelemetry (no baselines) from file: {}", path);
         println!("    [!] Absolute fallback thresholds will be used (Z-score rules inactive)");
-        (t, HostBaselines::default())
+        (t, HostBaselines::default(), LodaModel::default())
     };
 
     println!("    Source   : {}", telemetry.src_ip_str());
@@ -517,7 +517,7 @@ fn prove_file_mode(path: &str) -> Result<()> {
         label:    "Edge Bincode Input",
         telemetry,
         baselines,
-        forest:   IsolationForestModel::default(),
+        loda,
     };
     prove_scenario(&scenario)
 }

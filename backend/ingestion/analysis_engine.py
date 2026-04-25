@@ -56,6 +56,17 @@ _LODA_SPARSITY = 0.5        # probability that a projection weight is 0
 _LODA_SEED     = 42         # reproducible projection matrix
 _MAX_LODA_ROWS = 200_000    # training buffer cap (memory bound)
 
+# CUSUM C2 beacon detector constants
+_CUSUM_PERIODS_US: list[int] = [
+    60_000_000,   # 1-min C2 heartbeat (common RAT interval)
+    300_000_000,  # 5-min low-and-slow beacon
+    600_000_000,  # 10-min APT-style check-in
+]
+_CUSUM_N_BINS    = 16    # must be power-of-2; bitshift replaces division in guest
+_CUSUM_K_FACTOR  = 0.5  # allowance = K_FACTOR × median L1 under benign traffic
+_CUSUM_THRESHOLD = 10.0  # DAS-CUSUM alert threshold (real-valued; Q14-encoded for guest)
+_MAX_CUSUM_IPS   = 5_000  # max distinct source IPs to track (memory guard)
+
 
 # ── SQLite lock-retry decorator ───────────────────────────────────────────────
 
@@ -972,6 +983,203 @@ class LodaBaseliner:
             return None
 
 
+# ── CUSUM C2 Beacon Baseliner (Zero-MUL Split-Brain) ─────────────────────────
+
+class CusumBaseliner:
+    """
+    Zero-MUL Time-Domain CUSUM C2 Beacon Baseliner — Split-Brain implementation.
+
+    Accumulates per-source-IP inter-arrival times across pipeline chunks, then
+    calibrates DAS-CUSUM parameters for periodic beaconing detection.
+
+    Stage 0/1 — Multiplierless comb pre-filter (Python host, ADD/SUB only):
+        For each source IP, accumulate timestamps chronologically.
+        The "comb" is the first-difference Δt[n] = t[n] − t[n-1] — pure subtraction.
+
+    Stage 2 — Epoch-Folded L1 Histogram (Python host):
+        For each candidate period P_i (microseconds):
+            phase[n]   = t[n] % P_i
+            bin_idx[n] = phase[n] // bin_width       (integer division)
+            C[j]       = count of observations in bin j
+            expected   = N >> shift_val              (bitshift approximates N / n_bins)
+            L1 score   = Σ_j | C[j] − expected |   (no MUL — pure ADD/SUB/ABS)
+
+    Stage 3 — DAS-CUSUM accumulator (Rust guest, proved in zkVM):
+        S_n[i] = max(0,  S_{n-1}[i]  +  B_n[i]  −  k)
+        Alert when S_n[i] > cusum_threshold_fp14
+
+    The payload() method returns static model parameters (k, threshold, drift).
+    Per-record B_n scores and CUSUM states are computed on-the-fly via
+    b_n_for_ip() / cusum_state_for_ip() when assembling TelemetryInput for STARK proof.
+    """
+
+    def __init__(self) -> None:
+        # Per-source-IP sorted timestamp lists: {ip: [t_us, ...]}
+        self._timestamps: dict[str, list[int]] = {}
+        # Running CUSUM state per source IP per period: {ip: [S_0, S_1, S_2]}
+        self._cusum_states: dict[str, list[float]] = {}
+        self._fitted:        bool  = False
+        self._cusum_k:       float = 0.0
+        self._cusum_threshold: float = _CUSUM_THRESHOLD
+
+    def update(self, df: "pd.DataFrame") -> None:
+        """Accumulate timestamp sequences from one normalised chunk."""
+        if not _PANDAS_OK:
+            return
+        if "timestamp" not in df.columns or "source_ip" not in df.columns:
+            return
+        try:
+            import pandas as pd  # noqa: F811
+            ts_col = pd.to_datetime(df["timestamp"], errors="coerce")
+            ip_col = df["source_ip"]
+            for ip, ts in zip(ip_col, ts_col):
+                if ip is None or pd.isna(ts):
+                    continue
+                ip_s = str(ip)
+                if len(self._timestamps) >= _MAX_CUSUM_IPS and ip_s not in self._timestamps:
+                    continue
+                t_us = int(ts.timestamp() * 1_000_000)
+                self._timestamps.setdefault(ip_s, []).append(t_us)
+        except Exception:
+            logger.warning("CusumBaseliner.update failed: %s", traceback.format_exc())
+
+    def fit(self) -> None:
+        """
+        Calibrate the CUSUM drift parameter k from accumulated training data.
+        k = K_FACTOR × median(L1 scores across all IPs and periods).
+        CPU-bound — call inside a thread-pool executor after the chunk loop.
+        """
+        if not self._timestamps:
+            return
+        try:
+            all_l1: list[float] = []
+            for times in self._timestamps.values():
+                if len(times) < 4:
+                    continue
+                times_s = sorted(times)
+                for p_us in _CUSUM_PERIODS_US:
+                    l1 = self._l1_score(times_s, p_us)
+                    if l1 is not None:
+                        all_l1.append(l1)
+
+            if not all_l1:
+                self._fitted = True
+                return
+
+            all_l1.sort()
+            median = all_l1[len(all_l1) // 2]
+            self._cusum_k = _CUSUM_K_FACTOR * median
+            self._fitted = True
+            logger.info(
+                "CusumBaseliner fitted: %d IPs, median_L1=%.2f, k=%.4f, threshold=%.2f",
+                len(self._timestamps), median, self._cusum_k, self._cusum_threshold,
+            )
+        except Exception:
+            logger.warning("CusumBaseliner.fit failed: %s", traceback.format_exc())
+
+    def _l1_score(self, times_us: list[int], period_us: int) -> "float | None":
+        """
+        Stage 2: Epoch-fold timestamps mod period_us into _CUSUM_N_BINS bins,
+        compute L1 distance from uniform using bitshift-approximated expected count.
+
+        Returns the L1 score (float) or None when there are too few observations.
+        """
+        n = len(times_us)
+        if n < 2 or period_us <= 0:
+            return None
+        bin_width = period_us // _CUSUM_N_BINS
+        if bin_width <= 0:
+            return None
+
+        counts = [0] * _CUSUM_N_BINS
+        for t in times_us:
+            phase   = t % period_us
+            bin_idx = min(phase // bin_width, _CUSUM_N_BINS - 1)
+            counts[bin_idx] += 1
+
+        # Bitshift approximates n // n_bins: mirrors the Rust guest's shift_val.
+        shift_val = _CUSUM_N_BINS.bit_length() - 1  # log2(16) = 4
+        expected  = n >> shift_val
+        return float(sum(abs(c - expected) for c in counts))
+
+    def b_n_for_ip(self, source_ip: str) -> list[int]:
+        """
+        Compute the per-period Q14-encoded L1 score (B_n) for a given source IP
+        using its full accumulated timestamp history.
+
+        Returns k Q14 integers (one per _CUSUM_PERIODS_US).
+        Returns all-zeros when fewer than 4 timestamps are available.
+        """
+        times = self._timestamps.get(source_ip)
+        if not times or len(times) < 4:
+            return [0] * len(_CUSUM_PERIODS_US)
+        times_s = sorted(times)
+        result: list[int] = []
+        for p_us in _CUSUM_PERIODS_US:
+            l1 = self._l1_score(times_s, p_us)
+            raw = l1 if l1 is not None else 0.0
+            result.append(int(math.floor(raw * (1 << 14))))
+        return result
+
+    def cusum_state_for_ip(self, source_ip: str) -> list[int]:
+        """
+        Return the running Q14-encoded CUSUM state per period for a source IP.
+        Returns all-zeros when no prior state exists (new IP or session start).
+        """
+        states = self._cusum_states.get(source_ip)
+        if not states:
+            return [0] * len(_CUSUM_PERIODS_US)
+        return [int(math.floor(s * (1 << 14))) for s in states]
+
+    def advance_state(self, source_ip: str, b_n_fp14: list[int]) -> None:
+        """
+        Advance the Python-side CUSUM state by one record — mirrors the Rust guest
+        Stage 3 formula.  Call this after building each TelemetryInput so the running
+        state stays synchronized between the Python host and the zkVM guest.
+
+        S_n[i] = max(0,  S_{n-1}[i]  +  B_n[i]  −  k)
+        """
+        k = self._cusum_k if self._fitted else 0.0
+        fp14 = 1 << 14
+        prev = self._cusum_states.get(source_ip, [0.0] * len(_CUSUM_PERIODS_US))
+        self._cusum_states[source_ip] = [
+            max(0.0, prev[i] + (b_fp14 / fp14) - k)
+            for i, b_fp14 in enumerate(b_n_fp14)
+        ]
+
+    @property
+    def is_trained(self) -> bool:
+        return self._fitted
+
+    def payload(self) -> "str | None":
+        """
+        Return a JSON string with the static CusumModel parameters for storage
+        in pipeline_sessions.cusum_payload.
+
+        The Rust host reads this to reconstruct the static parts of CusumModel
+        (drift k, threshold) when assembling per-record TelemetryInput structs.
+        Per-record B_n and CUSUM states are computed separately via b_n_for_ip()
+        and cusum_state_for_ip().
+
+        Q14 encoding: floor(real_value × 2^14)
+        """
+        try:
+            k_fp14        = int(math.floor(self._cusum_k        * (1 << 14)))
+            thresh_fp14   = int(math.floor(self._cusum_threshold * (1 << 14)))
+            shift_val     = _CUSUM_N_BINS.bit_length() - 1
+            return json.dumps({
+                "k":                    len(_CUSUM_PERIODS_US),
+                "n_bins":               _CUSUM_N_BINS,
+                "shift_val":            shift_val,
+                "periods_us":           _CUSUM_PERIODS_US,
+                "cusum_k_fp14":         k_fp14,
+                "cusum_threshold_fp14": thresh_fp14,
+            })
+        except Exception:
+            logger.warning("CusumBaseliner.payload failed: %s", traceback.format_exc())
+            return None
+
+
 # ── Tier 2/3: MITRE Enrichment ────────────────────────────────────────────────
 
 def tier2_enrich(
@@ -1193,7 +1401,8 @@ CREATE TABLE IF NOT EXISTS pipeline_sessions (
     chain_tip_hash           TEXT,
     ciso_summary             TEXT,
     ddsketch_threshold_fp14  INTEGER DEFAULT 0,
-    loda_payload             TEXT
+    loda_payload             TEXT,
+    cusum_payload            TEXT
 );
 """
 
@@ -1214,6 +1423,12 @@ def ensure_pipeline_tables(db_path: str) -> None:
             try:
                 conn.execute(
                     "ALTER TABLE pipeline_sessions ADD COLUMN loda_payload TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists — no-op
+            try:
+                conn.execute(
+                    "ALTER TABLE pipeline_sessions ADD COLUMN cusum_payload TEXT"
                 )
             except sqlite3.OperationalError:
                 pass  # column already exists — no-op
