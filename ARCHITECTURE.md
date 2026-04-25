@@ -321,116 +321,141 @@ The p99 estimate has multiplicative relative error ≤ α = 1%. For a true p99 o
 
 ---
 
-## 8. Detection Pillar II — Isolation Forest Multivariate Anomaly
+## 8. Detection Pillar II — LODA (Lightweight On-line Detector of Anomalies)
+
+> **v4 upgrade:** Isolation Forest was superseded by LODA. Rationale is documented in §17.4.
 
 ### 8.1 Algorithm
 
-Isolation Forest detects anomalies by isolating observations in a random ensemble of binary trees. Anomalous points — those with unusual combinations of features — are isolated closer to the root, yielding a shorter average path length.
+LODA detects multivariate anomalies by projecting high-dimensional data onto k sparse 1-D axes, fitting a histogram on each projected axis, and scoring records by the sum of negative log-densities across all projections. Records that fall in low-density histogram bins across multiple projections are flagged as anomalous.
 
-**Anomaly score** for a point `x` with `n` training samples:
+**Anomaly score** for a record `x`:
 
 ```
-s(x, n) = 2^( −E[l(x)] / c(n) )
+score(x) = (1/k) · Σᵢ [ −log p̂ᵢ(wᵢᵀ x) ]
 ```
 
 Where:
-- `E[l(x)]` — expected path length across all trees
-- `c(n) = 2 H(n−1) − (2(n−1)/n)` — expected path length for an unsuccessful BST search; `H(k) = ln(k) + 0.5772...` (Euler–Mascheroni constant)
+- `k` — number of sparse random projections (default: 8)
+- `wᵢ` — sparse projection vector with elements `wᵢⱼ ∈ {−1, 0, 1}`
+- `p̂ᵢ(·)` — 1D histogram density estimate on the i-th projected axis
 
-An anomaly score `s → 1` indicates a high-confidence anomaly; `s → 0.5` indicates a normal point.
+A record is anomalous when `score(x) > T`, where `T` is the 95th-percentile score computed over the training population.
 
-### 8.2 zkVM Serialization — Stride-4 Array
+### 8.2 Sparse Projection Design
 
-sklearn's `IsolationForest` cannot be used directly in the Rust guest. The Python `ForestBaseliner` extracts the trained forest into a **stride-4 flattened integer array** compatible with the no-alloc, deterministic zkVM environment:
-
-```
-nodes[i*4 + 0] = feature_index      (0–3 for internal; −1 for leaf)
-nodes[i*4 + 1] = threshold_fp14     = floor(sklearn_threshold × 2^14)
-nodes[i*4 + 2] = left_child         (global node index; −1 for leaf)
-nodes[i*4 + 3] = right_child        (global node index; −1 for leaf)
-```
-
-Feature mapping (Python → guest index):
-
-| Index | Feature | Scale |
-|---|---|---|
-| 0 | `bytes_out` (bytes/s) | raw |
-| 1 | `flow_duration` (ms) | raw |
-| 2 | `packets` (count) | raw |
-| 3 | `dest_port` | raw |
-
-### 8.3 Python Host — `ForestBaseliner`
+Projection vectors are generated with sparsity `ρ = 0.5` (probability that `wᵢⱼ = 0`):
 
 ```python
-class ForestBaseliner:
-    MAX_FIT_ROWS = 200_000  # memory cap for training
+for j in range(n_features):
+    r = rng.random()
+    if   r < (1 − ρ) / 2:  wᵢⱼ = −1
+    elif r < (1 − ρ):      wᵢⱼ = +1
+    else:                   wᵢⱼ =  0   # skipped in both Python and Rust
+```
 
-    def accumulate(self, df: pd.DataFrame):
-        self._buffer.append(df[FOREST_FEATURES].dropna())
+At least one non-zero weight is guaranteed per vector. The seed (`_LODA_SEED = 42`) is fixed so the projection matrix is identical between Python training and the Rust guest, ensuring Q14-encoded bin edges are valid for the same projected space.
 
+### 8.3 zkVM Serialization — Flat Array Payload
+
+The Python `LodaBaseliner` exports the trained model as a JSON payload with Q14/Q10 fixed-point encoding. The `LodaModel` struct in `verifier/core/src/lib.rs` holds the deserialized arrays.
+
+| Field | Python type | Encoding | Rust type |
+|---|---|---|---|
+| `projections` | `int8[k × 4]` | raw (∈ {−1,0,1}) | `Vec<i8>` |
+| `bin_edges_fp14` | `float[k × (n_bins+1)]` | `floor(edge × 2^14)` | `Vec<i64>` |
+| `bin_scores_fp10` | `float[k × n_bins]` | `floor(−log(density) × 2^10)` | `Vec<i32>` |
+| `anomaly_threshold_fp10` | `float` | `floor(T_mean × k × 2^10)` | `i64` |
+
+The threshold is scaled by `k` because the Rust guest accumulates a raw sum (not a mean) across k projections; multiplying the per-projection mean threshold by k gives the equivalent total-score threshold.
+
+### 8.4 Python Host — `LodaBaseliner`
+
+```python
+class LodaBaseliner:
     def fit(self):
-        data = pd.concat(self._buffer).head(self.MAX_FIT_ROWS)
-        self._forest = IsolationForest(n_estimators=100, contamination=0.05)
-        self._forest.fit(data)
+        X = np.vstack(self._buffer)             # accumulated feature matrix
+        for i in range(_LODA_K):
+            w = self._projections[i]
+            # Sparse projection — mirrors Rust match-arm add/subtract
+            z = np.zeros(len(X))
+            for j in range(4):
+                if w[j] == 1:  z += X[:, j]
+                elif w[j] == -1: z -= X[:, j]
+            # 1D histogram
+            edges  = np.histogram_bin_edges(z, bins=_LODA_N_BINS)
+            counts, _ = np.histogram(z, bins=edges)
+            density = counts / (len(X) * np.diff(edges).clip(min=1e-10))
+            score   = -np.log(density.clip(min=1e-10)).clip(max=50.0)
+            # ... accumulate for threshold, store Q14/Q10 encoded
 
-    def payload(self) -> dict:
-        """Serialize to stride-4 integer format for Rust guest."""
-        nodes, roots = [], []
-        for estimator in self._forest.estimators_:
-            root_global = len(nodes) // 4
-            roots.append(root_global)
-            self._flatten_tree(estimator.tree_, nodes)
-        return {
-            "nodes": nodes,
-            "tree_roots": roots,
-            "path_length_threshold": int(
-                self._path_threshold() * 16_384  # Q14 encode
-            ),
+    def payload(self) -> str:
+        # Q14 encode bin edges: floor(edge × 2^14)
+        # Q10 encode scores:    floor(score × 2^10)
+        # threshold_fp10 = floor(threshold_mean × k × 2^10)
+```
+
+### 8.5 Rust Guest — `loda_score`
+
+```rust
+fn loda_score(model: &LodaModel, t: &NetworkTelemetry) -> Option<i64> {
+    let features = loda_features(t);   // [bps_kb, pkt_count, dur_ms, dst_port] as i64
+    let mut total_score: i64 = 0;
+
+    for i in 0..k {
+        // ── Sparse projection: zero multiplication ────────────────────────
+        let mut z: i64 = 0;
+        for j in 0..nf {
+            match model.projections[i * nf + j] {
+                1  => z += features[j],   // ADD  — single-cycle RV32IM
+                -1 => z -= features[j],   // SUB  — single-cycle RV32IM
+                _  => {}                  // skip — saves one ADD per zero weight
+            }
         }
-```
 
-### 8.4 Rust Guest — `traverse_tree` and `traverse_forest`
+        // Scale to Q14 for comparison with Q14-encoded bin edges.
+        // One saturating_mul per projection — not per feature × tree-node.
+        let z_fp14 = z.saturating_mul(16_384);
 
-```rust
-fn traverse_tree(nodes: &[i32], root: i32, features: &[i32; 4]) -> i32 {
-    let mut node = root as usize;
-    let mut depth = 0;
-    loop {
-        let fi  = nodes[node * 4];
-        let thr = nodes[node * 4 + 1];  // Q14
-        let lc  = nodes[node * 4 + 2];
-        let rc  = nodes[node * 4 + 3];
-        if fi < 0 { break; }            // leaf
-        // Feature values are raw integers; threshold is Q14.
-        // Multiply feature by 2^14 before comparing to threshold_fp14.
-        let fval_fp14 = (features[fi as usize] as i32).saturating_mul(16_384);
-        node = if fval_fp14 <= thr { lc as usize } else { rc as usize };
-        depth += 1;
+        // ── Bin lookup: linear scan over ~10 contiguous edges ─────────────
+        let mut bin_idx = nb - 1;  // default: last bin (right tail)
+        for b in 0..nb {
+            if z_fp14 < model.bin_edges_fp14[edge_base + b + 1] {
+                bin_idx = b;
+                break;
+            }
+        }
+
+        // ── Score accumulation ────────────────────────────────────────────
+        total_score += model.bin_scores_fp10[score_base + bin_idx] as i64;
     }
-    depth
-}
-
-fn traverse_forest(forest: &IsolationForestModel, features: &[i32; 4]) -> i32 {
-    if forest.tree_roots.is_empty() { return i32::MAX; }
-    let n = forest.tree_roots.len() as i32;
-    let sum_depth: i32 = forest.tree_roots.iter()
-        .map(|&r| traverse_tree(&forest.nodes, r, features))
-        .sum();
-    // avg_path_fp14 = (sum_depth × 2^14) / n_trees
-    sum_depth.saturating_mul(16_384) / n
+    Some(total_score)
 }
 ```
 
-### 8.5 Rule Evaluation — `ISOLATION_FOREST_ANOMALY` (bit 12)
+### 8.6 Rule Evaluation — `LODA_ANOMALY` (bit 12)
 
 ```rust
-let avg_path_fp14 = traverse_forest(&input.forest, &features);
-if avg_path_fp14 < input.forest.path_length_threshold {
-    triggered |= rules::ISOLATION_FOREST_ANOMALY;
+if let Some(score) = loda_score(&input.loda, t) {
+    if score > input.loda.anomaly_threshold_fp10 {
+        fired |= rules::LODA_ANOMALY;
+        if cat == 0 { cat = 5; conf = conf.max(72); }  // ANOMALY
+    }
 }
 ```
 
-A short average path (anomalous isolation) is `avg_path_fp14 < threshold`. The threshold encodes the boundary separating normal from anomalous path-length distributions, derived from the training data's score distribution.
+### 8.7 Cycle-Count Rationale
+
+The critical path comparison vs. Isolation Forest on RV32IM:
+
+| Operation | Isolation Forest | LODA |
+|---|---|---|
+| Inner loop body | `MUL` (fp14 scale) + branch + random memory load per node | `ADD` or `SUB` (match arm) per feature — **zero MUL** |
+| Memory access pattern | Pointer-jump to child node index — cache-hostile | Sequential flat-array scan — cache-friendly |
+| Worst-case iterations | `n_trees × MAX_TREE_DEPTH = 8 × 64 = 512` | `k × n_bins = 8 × 10 = 80` |
+| Scaling cost | Grows with tree depth × estimators | Fixed: `k × n_features + k × n_bins` |
+
+On RV32IM, `match { 1 => z += x, -1 => z -= x, _ => {} }` compiles to two conditional branches and one ADD or SUB — no MUL instructions. The Isolation Forest's `fval_fp14 = feature.saturating_mul(16_384)` required a MUL per tree node. LODA's single `z.saturating_mul(16_384)` fires once per projection, not per node.
 
 ---
 
@@ -549,7 +574,7 @@ Step 2 ensures the STARK proof commits to the exact input that was evaluated. A 
 | 9 | `MODBUS_INVALID` | modbus_func_code ∉ standard valid range |
 | 10 | `ZSCORE_ANOMALY` | \|Z\| > 3.0 on bytes/s or packet count (§10.4.1) |
 | 11 | `DDSKETCH_VOLUME` | current_scaled > ddsketch_threshold_fp14 (§7.3) |
-| 12 | `ISOLATION_FOREST_ANOMALY` | avg_path_fp14 < path_length_threshold (§8.5) |
+| 12 | `LODA_ANOMALY` | sum of per-projection –log(density) scores > anomaly_threshold_fp10 (§8.6) |
 
 #### 10.4.1 Z-Score Rule (integer, guest-side)
 
@@ -902,22 +927,42 @@ Raw STARK receipts (~217–250 KB) are transmitted as base64 strings in the HTTP
 
 This section documents algorithms that were evaluated but not included in v1, preserving the rationale for future reference.
 
-### 17.1 Mahalanobis Distance (Rejected)
+### 17.1 Isolation Forest (Evaluated — Superseded by LODA in v4)
+
+**Rationale for initial selection:** Isolation Forest (v3) offered several advantages: no distributional assumption, O(n log n) training, natural handling of correlated features, and deterministic output from a fixed random seed. The stride-4 flattened array serialization was compact and the Q14 path-length threshold encoding was clean.
+
+**Supersession reason — zkVM microarchitectural analysis:** Profiling the RV32IM execution trace revealed two critical bottlenecks:
+
+1. **Pointer-jump memory access pattern.** Each `traverse_tree` call follows a chain of global array indices: `current = nodes[base+2]` or `nodes[base+3]`. With up to 8 trees × 64 nodes, these jumps produce cache-hostile sequential access patterns in the zkVM's simulated memory, each requiring a separate memory-load cycle.
+
+2. **Multiply per node.** The Q14 feature scaling `fval_fp14 = feature.saturating_mul(16_384)` issued one MUL instruction per internal tree node. On RV32IM the MUL instruction costs 3 cycles vs. 1 cycle for ADD/SUB. With `n_trees × average_depth` nodes evaluated per record, this adds up to hundreds of MUL cycles that LODA eliminates entirely.
+
+**LODA's solution:** projection weights `wᵢⱼ ∈ {-1, 0, 1}` replace the MUL with a match-arm ADD or SUB (or a skip). The single Q14 scaling `z.saturating_mul(16_384)` fires once per projection, not once per node. The linear bin-edge scan replaces the branching tree traversal with sequential flat-array accesses.
+
+### 17.2 Hyperdimensional Computing (HDC) (Rejected)
+
+**Rationale for evaluation:** HDC encodes records into high-dimensional binary vectors (hypervectors, dimension `D = 2 000–10 000`) and detects anomalies by measuring Hamming distance to a class prototype. It is inherently integer-based — XOR and POPCOUNT operations only — which made it attractive for the zkVM guest.
+
+**Rejection reason — missing RV32IM POPCOUNT instruction:** HDC's inner loop requires counting the number of 1-bits in an XOR result (popcount). The `x86_64` ISA provides `POPCNT` as a single instruction. RV32IM provides no equivalent; the `B` (bit-manipulation) extension adds `CPOP` but RISC Zero's guest ELF toolchain targets the base `RV32IM` ISA without the B extension. Emulating POPCOUNT on RV32IM requires a multi-instruction software loop (typically 7–12 instructions per 32-bit word using the Hamming-weight bit-trick). For a `D = 2 000` bit hypervector, a single Hamming-distance computation requires `ceil(2000/32) = 63` POPCOUNT calls × 10 instructions = 630 instructions per record — far exceeding LODA's 80-iteration flat-array scan.
+
+Additionally, HDC prototype training (bundling operation over thousands of training records with XOR + majority-vote) requires significant state that is awkward to serialize into the compact `LodaModel`-equivalent struct for `env::read()`.
+
+### 17.3 Mahalanobis Distance (Rejected)
 
 **Rationale for evaluation:** Mahalanobis distance accounts for feature correlations and normalizes by the covariance matrix, making it theoretically superior to independent Z-scores for multivariate anomaly detection.
 
-**Rejection reason:** Computing the covariance matrix inverse `Σ⁻¹` requires floating-point matrix operations (numpy `linalg.inv`). Translating this to a Q14 integer matrix inverse in the zkVM guest requires fixed-point matrix inversion algorithms (e.g., Gauss-Jordan with Q14 pivots), which are numerically unstable for near-singular covariance matrices arising from correlated network features. The complexity was deemed out of scope for v1. The Isolation Forest was selected instead as it naturally handles correlated features without requiring an explicit covariance estimate.
+**Rejection reason:** Computing the covariance matrix inverse `Σ⁻¹` requires floating-point matrix operations (numpy `linalg.inv`). Translating this to a Q14 integer matrix inverse in the zkVM guest requires fixed-point matrix inversion algorithms (e.g., Gauss-Jordan with Q14 pivots), which are numerically unstable for near-singular covariance matrices arising from correlated network features. The complexity was deemed out of scope for v1. LODA was selected instead, as it implicitly captures inter-feature correlations through random projections without requiring an explicit covariance estimate.
 
-### 17.2 Recursive Least Squares (RLS) Adaptive Filter (Rejected)
+### 17.4 Recursive Least Squares (RLS) Adaptive Filter (Rejected)
 
 **Rationale for evaluation:** RLS is an online algorithm that adapts a linear predictor to non-stationary data streams, making it attractive for tracking gradual baseline drift in network traffic.
 
 **Rejection reason:** RLS requires maintaining an `n×n` inverse covariance matrix `P` updated at each step: `P_{k} = (P_{k-1} - K_k C^T P_{k-1}) / λ`. With 4 features, this is a 4×4 matrix updated per row — feasible in Python float64 but requiring 16 Q14 fixed-point multiply-accumulate operations per row in the guest, plus numerical stability guarantees for the forgetting factor `λ` in integer arithmetic. The DDSketch + Z-score combination provides sufficient non-stationarity resistance via sliding window re-baselining without the guest-side matrix operations.
 
-### 17.3 Kalman Filter (Considered, Not Implemented)
+### 17.5 Kalman Filter (Considered, Not Implemented)
 
-The Kalman filter was considered as a more principled state estimator for flow-rate baselining. Like RLS, the prediction step (`x̂ = F x̂_{k-1}`) and update step (`K = PH^T(HPH^T + R)^{-1}`) require matrix operations with guaranteed positive-definite covariance matrices. The same Q14 matrix-operation complexity argument as §17.2 applies. Deferred to v2.
+The Kalman filter was considered as a more principled state estimator for flow-rate baselining. Like RLS, the prediction step (`x̂ = F x̂_{k-1}`) and update step (`K = PH^T(HPH^T + R)^{-1}`) require matrix operations with guaranteed positive-definite covariance matrices. The same Q14 matrix-operation complexity argument as §17.4 applies. Deferred to v2.
 
 ---
 
-*Document last updated: 2026-04-25 — reflects verifier/core v2 (ML upgrade) and analysis_engine.py session-pipeline implementation.*
+*Document last updated: 2026-04-25 — reflects verifier/core v4 (LODA upgrade, superseding Isolation Forest) and analysis_engine.py LODA baseliner.*

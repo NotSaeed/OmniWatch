@@ -37,11 +37,11 @@ except ImportError:
     logger.error("pandas not installed — pip install pandas")
 
 try:
-    from sklearn.ensemble import IsolationForest
-    _SKLEARN_OK = True
+    import numpy as _np
+    _NUMPY_OK = True
 except ImportError:
-    _SKLEARN_OK = False
-    logger.warning("scikit-learn not installed — ML filter disabled (pip install scikit-learn numpy)")
+    _NUMPY_OK = False
+    logger.warning("numpy not installed — LODA ML filter disabled (pip install numpy)")
 
 try:
     from ddsketch import DDSketch as _DDSketch
@@ -50,9 +50,11 @@ except ImportError:
     _DDSKETCH_OK = False
     logger.warning("ddsketch not installed — dynamic thresholds disabled (pip install ddsketch)")
 
-_N_ESTIMATORS_FOREST = 8          # small forest → fast zkVM input stream
-_MAX_SAMPLES_FOREST  = 64         # bootstrap sample → node thresholds fit i32
-_MAX_FOREST_ROWS     = 200_000    # cap accumulated rows to avoid GB memory on large files
+_LODA_K        = 8          # number of sparse random projections
+_LODA_N_BINS   = 10         # 1D histogram bins per projection
+_LODA_SPARSITY = 0.5        # probability that a projection weight is 0
+_LODA_SEED     = 42         # reproducible projection matrix
+_MAX_LODA_ROWS = 200_000    # training buffer cap (memory bound)
 
 
 # ── SQLite lock-retry decorator ───────────────────────────────────────────────
@@ -502,7 +504,7 @@ def tier1_filter(df: "pd.DataFrame", schema: str) -> "pd.DataFrame":
     return flagged
 
 
-# ── Forest feature extraction ─────────────────────────────────────────────────
+# ── LODA / shared feature extraction ─────────────────────────────────────────
 
 def _col1(df: "pd.DataFrame", col: str, default: "pd.Series | None" = None) -> "pd.Series":
     """
@@ -527,15 +529,15 @@ def _col1(df: "pd.DataFrame", col: str, default: "pd.Series | None" = None) -> "
     return val  # type: ignore[return-value]  # already a Series
 
 
-def _extract_forest_features(df: "pd.DataFrame") -> "pd.DataFrame":
+def _extract_loda_features(df: "pd.DataFrame") -> "pd.DataFrame":
     """
-    Extract 4 canonical features for the Isolation Forest in i32-safe units.
+    Extract 4 canonical features for LODA in integer-safe units.
 
-    Features (all non-negative, clamped so value × 2^14 fits in i32):
-      bytes_per_sec_kb  — bytes_out / flow_duration_s / 1024  [KB/s, max 1_000_000]
-      packet_count      — packets                             [count, max 1_000_000]
-      flow_duration_ms  — flow_duration_µs / 1000            [ms, clamped to 65_535]
-      dest_port         — dest_port                           [0–65_535]
+    Feature order matches the Rust guest `loda_features()` function exactly:
+      [0] bytes_per_sec_kb  — bytes_out / flow_duration_s / 1024  [KB/s, max 1_000_000]
+      [1] packet_count      — packets                             [count, max 1_000_000]
+      [2] flow_duration_ms  — flow_duration_µs / 1000            [ms, clamped to 65_535]
+      [3] dest_port         — dest_port                           [0–65_535]
     """
     import pandas as pd  # local — safe inside executor
 
@@ -564,105 +566,87 @@ def _extract_forest_features(df: "pd.DataFrame") -> "pd.DataFrame":
     return feats[["bytes_per_sec_kb", "packet_count", "flow_duration_ms", "dest_port"]]
 
 
-# ── Tier 1 ML: Isolation Forest ──────────────────────────────────────────────
+# ── Tier 1 ML: LODA (per-chunk) ───────────────────────────────────────────────
 
-def tier1_ml_filter(
+def tier1_loda_filter(
     df: "pd.DataFrame",
     contamination: float = 0.05,
 ) -> "pd.DataFrame":
     """
-    Unsupervised anomaly detection using IsolationForest.
+    Per-chunk LODA anomaly detection.
 
-    Trains a fast model on the chunk's numeric features (bytes_out, bytes_in,
-    packets) and returns rows predicted as outliers (label == -1).
+    Trains a fresh LODA model on the current chunk's 4 canonical features and
+    returns rows whose mean –log(density) score exceeds the (1 – contamination)
+    percentile.
 
-    Falls back to returning an empty DataFrame if sklearn is not installed or
-    if the chunk has fewer than 20 rows (insufficient for meaningful training).
+    Replaces the old per-chunk IsolationForest.  Cycle-count advantages in the zkVM:
+      • Projection = {-1, 0, +1} dot product → no MUL instructions on RV32IM
+      • Bin lookup = linear scan over ~10 contiguous edges → no pointer-jump traversal
+      • Deterministic output given fixed _LODA_SEED
+
+    Falls back to an empty DataFrame when numpy is unavailable or the chunk
+    has fewer than 20 rows (insufficient histogram statistics).
     """
-    if not _SKLEARN_OK or not _PANDAS_OK:
-        logger.debug("tier1_ml_filter: sklearn/numpy not available — skipped")
-        return df.iloc[0:0]  # empty but schema-correct
+    if not _NUMPY_OK or not _PANDAS_OK:
+        logger.debug("tier1_loda_filter: numpy/pandas unavailable — skipped")
+        return df.iloc[0:0]
 
-    feats = _extract_forest_features(df)
-
+    feats = _extract_loda_features(df)
     if len(feats) < 20:
-        logger.debug("tier1_ml_filter: chunk too small (%d rows) — skipped", len(feats))
+        logger.debug("tier1_loda_filter: chunk too small (%d rows) — skipped", len(feats))
         return df.iloc[0:0]
 
     try:
-        clf = IsolationForest(
-            n_estimators=_N_ESTIMATORS_FOREST,
-            max_samples=min(_MAX_SAMPLES_FOREST, len(feats)),
-            contamination=contamination,
-            random_state=42,
-            n_jobs=1,
-        )
-        predictions = clf.fit_predict(feats.values)
-        outlier_mask = predictions == -1
+        X   = feats.values.astype(float)
+        rng = _np.random.default_rng(_LODA_SEED)
+
+        # Generate k sparse projection vectors: w_ij ∈ {-1, 0, 1}
+        P = _np.zeros((_LODA_K, 4), dtype=_np.int8)
+        for i in range(_LODA_K):
+            for j in range(4):
+                r = rng.random()
+                if r < (1.0 - _LODA_SPARSITY) / 2.0:
+                    P[i, j] = -1
+                elif r < (1.0 - _LODA_SPARSITY):
+                    P[i, j] = 1
+            if not _np.any(P[i]):          # guarantee ≥ 1 non-zero weight
+                P[i, rng.integers(4)] = 1
+
+        scores = _np.zeros(len(X))
+        for i in range(_LODA_K):
+            w = P[i]
+            # Sparse projection — mirrors the Rust match-arm add/subtract
+            z = _np.zeros(len(X))
+            for j in range(4):
+                if w[j] == 1:
+                    z += X[:, j]
+                elif w[j] == -1:
+                    z -= X[:, j]
+
+            edges   = _np.histogram_bin_edges(z, bins=_LODA_N_BINS)
+            counts, _ = _np.histogram(z, bins=edges)
+            widths  = _np.diff(edges).clip(min=1e-10)
+            density = counts / (len(X) * widths)
+            score   = -_np.log(density.clip(min=1e-10)).clip(max=50.0)
+
+            bin_idx = _np.searchsorted(edges[1:], z, side="left")
+            bin_idx = _np.clip(bin_idx, 0, _LODA_N_BINS - 1)
+            scores += score[bin_idx]
+
+        scores      /= _LODA_K
+        threshold    = float(_np.percentile(scores, 100.0 * (1.0 - contamination)))
+        outlier_mask = scores > threshold
         result = df[outlier_mask].copy()
-        result["severity"] = result.get("severity", "MEDIUM")
+        if "severity" not in result.columns:
+            result["severity"] = "MEDIUM"
         logger.debug(
-            "tier1_ml_filter: %d/%d rows flagged as outliers (contamination=%.2f)",
-            outlier_mask.sum(), len(df), contamination,
+            "tier1_loda_filter: %d/%d rows flagged (contamination=%.2f)",
+            int(outlier_mask.sum()), len(df), contamination,
         )
         return result
     except Exception:
-        logger.warning("tier1_ml_filter failed: %s", traceback.format_exc())
+        logger.warning("tier1_loda_filter failed: %s", traceback.format_exc())
         return df.iloc[0:0]
-
-
-# ── Isolation Forest flattener (Phase 2: Split-Brain Fixed-Point) ────────────
-
-def _c_n(n: int) -> float:
-    """Expected path length of unsuccessful BST search in a tree of n leaves."""
-    if n <= 1:
-        return 0.0
-    return 2.0 * (math.log(n - 1) + 0.5772156649) - 2.0 * (n - 1) / n
-
-
-def flatten_isolation_forest(
-    clf: "IsolationForest",
-) -> "tuple[list[int], list[int], int]":
-    """
-    Flatten a fitted IsolationForest into a stride-4 integer array for the zkVM.
-
-    Each node is encoded as 4 consecutive i32 values:
-        [0] feature_index   — 0–3 for internal nodes, -1 for leaves
-        [1] threshold_fp14  — floor(threshold × 2^14), 0 for leaves
-        [2] left_child      — GLOBAL array index of left subtree root, -1 for leaves
-        [3] right_child     — GLOBAL array index of right subtree root, -1 for leaves
-
-    Returns:
-        nodes                  — flat i32 list (len = sum of node_counts × 4)
-        tree_roots             — global start index (node offset) of each tree
-        path_length_threshold  — floor(0.6 × c(max_samples) × 2^14)
-
-    A record is anomalous when avg_path_fp14 < path_length_threshold.
-    For max_samples=64: c(64)≈7.47 → threshold = floor(0.6×7.47×16384) = 73_434.
-    """
-    nodes: list[int]      = []
-    tree_roots: list[int] = []
-
-    for estimator in clf.estimators_:
-        tree       = estimator.tree_
-        tree_start = len(nodes) // 4   # global node index of this tree's root
-        tree_roots.append(tree_start)
-
-        for local_idx in range(tree.node_count):
-            if tree.children_left[local_idx] < 0:   # TREE_LEAF sentinel (-1)
-                nodes.extend([-1, 0, -1, -1])
-            else:
-                feat_idx = int(tree.feature[local_idx])
-                t_fp14   = int(math.floor(float(tree.threshold[local_idx]) * (1 << 14)))
-                t_fp14   = max(-(2**31), min(t_fp14, 2**31 - 1))
-                left_g   = tree_start + int(tree.children_left[local_idx])
-                right_g  = tree_start + int(tree.children_right[local_idx])
-                nodes.extend([feat_idx, t_fp14, left_g, right_g])
-
-    n_samples = int(getattr(clf, "max_samples_", _MAX_SAMPLES_FOREST))
-    c         = _c_n(max(2, n_samples))
-    threshold = max(1, min(int(math.floor(0.6 * c * (1 << 14))), 2**31 - 1))
-    return nodes, tree_roots, threshold
 
 
 # ── Z-Score Baselining ────────────────────────────────────────────────────────
@@ -826,97 +810,165 @@ class DDSketchBaseliner:
         return int(math.floor(p99 * (1 << 14)))  # T = floor(X_limit × 2^14)
 
 
-# ── Forest Baseliner (Phase 2: Split-Brain Fixed-Point) ──────────────────────
+# ── LODA Baseliner (Split-Brain Fixed-Point) ──────────────────────────────────
 
-class ForestBaseliner:
+class LodaBaseliner:
     """
+    Lightweight On-line Detector of Anomalies — session-level Split-Brain baseliner.
+
     Accumulates normalized telemetry rows across pipeline chunks, then fits
-    a small IsolationForest (n_estimators=8, max_samples=64) after all chunks.
+    k sparse random projections and a 1D histogram per projection after all chunks.
 
-    After fit(), payload() returns a JSON string:
-        {
-            "nodes":                  [...],   # stride-4 flattened trees
-            "tree_roots":             [...],   # global start index per tree
-            "path_length_threshold":  int      # fp14-scaled anomaly threshold
-        }
+    After fit(), payload() returns a JSON string suitable for storage in
+    pipeline_sessions.loda_payload.  The Rust zkVM guest deserialises this into
+    a LodaModel and evaluates Rule 11 (LODA_ANOMALY) without any floating-point.
 
-    Stored in pipeline_sessions.forest_payload and passed to the Rust zkVM
-    guest so Rule 11 (ISOLATION_FOREST_ANOMALY) can run without floating-point.
+    Projection weights w_ij ∈ {-1, 0, 1}:
+      • Python training:  sparse dot-product via numpy column add/subtract
+      • Rust guest eval:  match-arm ADD/SUB — zero MUL instructions on RV32IM
+
+    Histogram bin edges and –log(density) scores are Q14/Q10 encoded so the
+    guest compares z_fp14 against integer bin boundaries with no division.
     """
 
     def __init__(self) -> None:
-        self._rows: "list[pd.DataFrame]" = []
-        self._clf:  "IsolationForest | None" = None
+        self._buffer: list = []
+        self._fitted: bool = False
+        self._projections: "_np.ndarray | None" = None
+        self._bin_edges:   "list | None" = None  # k arrays, each (n_bins+1,)
+        self._bin_scores:  "list | None" = None  # k arrays, each (n_bins,)
+        self._threshold:   float = 0.0
+        self._gen_projections()
+
+    def _gen_projections(self) -> None:
+        if not _NUMPY_OK:
+            return
+        rng = _np.random.default_rng(_LODA_SEED)
+        P   = _np.zeros((_LODA_K, 4), dtype=_np.int8)
+        for i in range(_LODA_K):
+            for j in range(4):
+                r = rng.random()
+                if r < (1.0 - _LODA_SPARSITY) / 2.0:
+                    P[i, j] = -1
+                elif r < (1.0 - _LODA_SPARSITY):
+                    P[i, j] = 1
+            if not _np.any(P[i]):      # guarantee ≥ 1 non-zero weight per vector
+                P[i, rng.integers(4)] = 1
+        self._projections = P
 
     def update(self, df: "pd.DataFrame") -> None:
-        """Accumulate canonical feature rows from one normalized chunk.
-
-        Stops accumulating once _MAX_FOREST_ROWS is reached — the IsolationForest
-        only needs a representative sample; collecting all 16M rows would use GB of
-        RAM and produce no statistical benefit over a 200K sample.
-        """
-        if not _SKLEARN_OK or not _PANDAS_OK:
+        """Accumulate canonical feature rows from one normalised chunk."""
+        if not _NUMPY_OK or not _PANDAS_OK or self._projections is None:
             return
-        # Count rows already accumulated
-        already = sum(len(r) for r in self._rows)
-        if already >= _MAX_FOREST_ROWS:
+        already = sum(len(r) for r in self._buffer)
+        if already >= _MAX_LODA_ROWS:
             return
-        feats = _extract_forest_features(df)
+        feats = _extract_loda_features(df)
         if not feats.empty:
-            # Trim the incoming chunk if it would push us over the cap
-            remaining = _MAX_FOREST_ROWS - already
-            self._rows.append(feats.iloc[:remaining])
+            remaining = _MAX_LODA_ROWS - already
+            self._buffer.append(feats.values[:remaining])
 
     def fit(self) -> None:
         """
-        Fit the IsolationForest on all accumulated rows.
-        CPU-bound — must be called inside an executor after the chunk loop.
+        Fit histograms on all accumulated projected data.
+        CPU-bound — called inside a thread-pool executor after the chunk loop.
         """
-        if not _SKLEARN_OK or not self._rows:
-            return
-        import pandas as pd  # local — safe inside executor
-        all_feats = pd.concat(self._rows, ignore_index=True)
-        if len(all_feats) < 20:
-            logger.debug("ForestBaseliner.fit: too few rows (%d) — skipped", len(all_feats))
+        if not _NUMPY_OK or not self._buffer or self._projections is None:
             return
         try:
-            n_samples = min(_MAX_SAMPLES_FOREST, len(all_feats))
-            clf = IsolationForest(
-                n_estimators=_N_ESTIMATORS_FOREST,
-                max_samples=n_samples,
-                contamination="auto",
-                random_state=42,
-                n_jobs=1,
-            )
-            clf.fit(all_feats.values)
-            self._clf = clf
+            X = _np.vstack(self._buffer)
+            if len(X) < 20:
+                logger.debug("LodaBaseliner.fit: too few rows (%d) — skipped", len(X))
+                return
+
+            bin_edges_list:  list = []
+            bin_scores_list: list = []
+            all_scores = _np.zeros(len(X), dtype=_np.float64)
+
+            for i in range(_LODA_K):
+                w = self._projections[i]
+
+                # Sparse projection — mirrors Rust match-arm add/subtract
+                z = _np.zeros(len(X), dtype=_np.float64)
+                for j in range(4):
+                    if w[j] == 1:
+                        z += X[:, j]
+                    elif w[j] == -1:
+                        z -= X[:, j]
+
+                # 1D histogram
+                edges     = _np.histogram_bin_edges(z, bins=_LODA_N_BINS)
+                counts, _ = _np.histogram(z, bins=edges)
+                widths    = _np.diff(edges).clip(min=1e-10)
+                density   = counts / (len(X) * widths)
+
+                # Score = –log(density), capped for numerical stability
+                score = -_np.log(density.clip(min=1e-10)).clip(max=50.0)
+                bin_edges_list.append(edges)
+                bin_scores_list.append(score)
+
+                bin_idx = _np.searchsorted(edges[1:], z, side="left")
+                bin_idx = _np.clip(bin_idx, 0, _LODA_N_BINS - 1)
+                all_scores += score[bin_idx]
+
+            self._bin_edges  = bin_edges_list
+            self._bin_scores = bin_scores_list
+            # 95th-percentile of per-sample mean scores → anomaly threshold
+            self._threshold = float(_np.percentile(all_scores / _LODA_K, 95))
+            self._fitted = True
             logger.info(
-                "ForestBaseliner fitted: %d rows, %d trees, max_samples=%d",
-                len(all_feats), _N_ESTIMATORS_FOREST, n_samples,
+                "LodaBaseliner fitted: %d rows, k=%d, n_bins=%d, threshold=%.4f",
+                len(X), _LODA_K, _LODA_N_BINS, self._threshold,
             )
         except Exception:
-            logger.warning("ForestBaseliner.fit failed: %s", traceback.format_exc())
+            logger.warning("LodaBaseliner.fit failed: %s", traceback.format_exc())
 
     @property
     def is_trained(self) -> bool:
-        return self._clf is not None
+        return self._fitted
 
     def payload(self) -> "str | None":
         """
-        Return a JSON string encoding the flattened forest for the zkVM,
-        or None if the forest has not been trained.
+        Return a JSON string encoding the LODA model in Q14/Q10 fixed-point for
+        the Rust zkVM guest, or None if the model has not been trained.
+
+        Encoding:
+          projections        — flat i8 array (k × 4), elements ∈ {-1, 0, 1}
+          bin_edges_fp14     — floor(real_edge × 2^14); i64; Q14
+          bin_scores_fp10    — floor(–log(density) × 2^10); i32; Q10; capped ≥ 0
+          anomaly_threshold_fp10 — floor(threshold_mean × k × 2^10)
+                               (guest sums k scores; Python threshold is their mean)
         """
-        if self._clf is None:
+        if not self._fitted or self._projections is None:
             return None
         try:
-            node_arr, roots, threshold = flatten_isolation_forest(self._clf)
+            proj_flat = self._projections.flatten().tolist()
+
+            edges_flat: list[int] = []
+            for edges in self._bin_edges:
+                for e in edges:
+                    edges_flat.append(int(math.floor(e * (1 << 14))))
+
+            scores_flat: list[int] = []
+            for scores in self._bin_scores:
+                for s in scores:
+                    v = int(math.floor(s * (1 << 10)))
+                    scores_flat.append(max(0, min(v, 2**31 - 1)))
+
+            # Guest accumulates raw sum across k projections; multiply mean by k
+            threshold_fp10 = int(math.floor(self._threshold * _LODA_K * (1 << 10)))
+
             return json.dumps({
-                "nodes":                 node_arr,
-                "tree_roots":            roots,
-                "path_length_threshold": threshold,
+                "k":                      _LODA_K,
+                "n_bins":                 _LODA_N_BINS,
+                "n_features":             4,
+                "projections":            proj_flat,
+                "bin_edges_fp14":         edges_flat,
+                "bin_scores_fp10":        scores_flat,
+                "anomaly_threshold_fp10": threshold_fp10,
             })
         except Exception:
-            logger.warning("ForestBaseliner.payload failed: %s", traceback.format_exc())
+            logger.warning("LodaBaseliner.payload failed: %s", traceback.format_exc())
             return None
 
 
@@ -1014,8 +1066,8 @@ def run_tier1_combined(
     # Mode A: heuristic rules (always runs)
     heuristic = tier1_filter(df, schema)
 
-    # Mode B: Isolation Forest (requires sklearn)
-    ml_flags = tier1_ml_filter(df, contamination=0.05)
+    # Mode B: LODA per-chunk anomaly detection (requires numpy)
+    ml_flags = tier1_loda_filter(df, contamination=0.05)
 
     # Mode C: Z-score baselining (always runs if pandas available)
     z_flags, baselines = zscore_baseline_filter(df, z_threshold=3.0)
@@ -1141,7 +1193,7 @@ CREATE TABLE IF NOT EXISTS pipeline_sessions (
     chain_tip_hash           TEXT,
     ciso_summary             TEXT,
     ddsketch_threshold_fp14  INTEGER DEFAULT 0,
-    forest_payload           TEXT
+    loda_payload             TEXT
 );
 """
 
@@ -1161,10 +1213,17 @@ def ensure_pipeline_tables(db_path: str) -> None:
                 pass  # column already exists — no-op
             try:
                 conn.execute(
-                    "ALTER TABLE pipeline_sessions ADD COLUMN forest_payload TEXT"
+                    "ALTER TABLE pipeline_sessions ADD COLUMN loda_payload TEXT"
                 )
             except sqlite3.OperationalError:
                 pass  # column already exists — no-op
+            # Backward-compat: keep old forest_payload column if present in DB
+            try:
+                conn.execute(
+                    "ALTER TABLE pipeline_sessions ADD COLUMN forest_payload TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass  # already exists from a pre-LODA schema — leave it unused
 
             # ── telemetry_alerts migrations ───────────────────────────────────
             # Databases created before the ML-upgrade sprint are missing the

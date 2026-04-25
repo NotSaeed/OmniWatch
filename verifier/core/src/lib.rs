@@ -84,11 +84,13 @@ pub mod rules {
     ///   `(bytes_per_sec << 14) > ddsketch_threshold_fp14`
     /// Fires only when `HostBaselines.ddsketch_threshold_fp14 > 0`.
     /// Takes priority over ZSCORE_ANOMALY for volumetric byte-rate rules.
-    pub const DDSKETCH_VOLUME: u32          = 1 << 11;
-    /// Isolation Forest multivariate anomaly: average path length (×2^14)
-    /// is below `IsolationForestModel.path_length_threshold`.
-    /// Fires only when `IsolationForestModel.tree_roots` is non-empty.
-    pub const ISOLATION_FOREST_ANOMALY: u32 = 1 << 12;
+    pub const DDSKETCH_VOLUME: u32 = 1 << 11;
+    /// LODA multivariate anomaly: sum of Q10-encoded –log(density) scores
+    /// across k sparse projections exceeds `LodaModel.anomaly_threshold_fp10`.
+    /// Fires only when `LodaModel.k > 0`.
+    /// Supersedes ISOLATION_FOREST_ANOMALY (removed in v4): eliminates tree-traversal
+    /// pointer jumps; projection weights ∈ {-1, 0, 1} reduce inner-loop to add/subtract.
+    pub const LODA_ANOMALY: u32 = 1 << 12;
 }
 
 // ── Network telemetry input ──────────────────────────────────────────────────
@@ -180,46 +182,67 @@ pub struct HostBaselines {
     pub ddsketch_threshold_fp14: u64,
 }
 
-// ── Isolation Forest model (flattened for zkVM) ───────────────────────────────
+// ── LODA model (flattened for zkVM) ──────────────────────────────────────────
 
-/// Stride-4 flattened IsolationForest trained by the Python pipeline.
+/// Lightweight On-line Detector of Anomalies — trained by the Python pipeline.
 ///
-/// Node layout (4 consecutive i32 values per node at index `i*4`):
-///   [0] feature_index   — 0–3 for internal nodes; -1 = leaf
-///   [1] threshold_fp14  — floor(threshold × 2^14); 0 for leaves
-///   [2] left_child      — GLOBAL node index of left subtree; -1 for leaves
-///   [3] right_child     — GLOBAL node index of right subtree; -1 for leaves
+/// Replaces IsolationForest (v3) for two microarchitectural reasons:
+///   1. Tree traversal requires pointer-jump branching on every node, bloating
+///      zkVM cycle counts with unpredictable memory access patterns.
+///   2. LODA projection weights ∈ {-1, 0, 1} reduce the inner multiply to a
+///      match-arm add/subtract — a single-cycle RV32IM operation.
 ///
-/// A record is anomalous when:
-///   `avg_path_fp14 = (sum of per-tree depths × 2^14) / n_trees`
-///   `avg_path_fp14 < path_length_threshold`
+/// Guest evaluation loop (zero multiplication):
+///   for j in 0..n_features {
+///       match projections[i * n_features + j] {
+///           1 => z += x[j],  -1 => z -= x[j],  _ => {}
+///       }
+///   }
+///   let z_fp14 = z.saturating_mul(16_384);
+///   // linear scan over ≈10 bin edges — O(n_bins) ≪ O(tree_depth)
+///   // accumulate bin_scores_fp10[bin_idx] into total_score
 ///
-/// When `tree_roots` is empty the guest skips Rule 11 entirely.
+/// Anomaly gate: `total_score > anomaly_threshold_fp10`.
+/// When `k == 0` the guest skips Rule 11 entirely.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct IsolationForestModel {
-    /// Stride-4 array: [feature_index, threshold_fp14, left_global, right_global] per node.
-    pub nodes: Vec<i32>,
-    /// Global node index (offset into `nodes / 4`) of each tree's root.
-    pub tree_roots: Vec<i32>,
-    /// Average path length × 2^14 below which a record is flagged as anomalous.
-    /// 0 = forest not available; guest skips Rule 11.
-    pub path_length_threshold: i32,
+pub struct LodaModel {
+    /// Number of sparse random projections.
+    pub k: u32,
+    /// Number of histogram bins per projection.
+    pub n_bins: u32,
+    /// Feature dimension (= 4: bytes_per_sec_kb, packet_count, flow_duration_ms, dest_port).
+    pub n_features: u32,
+    /// Flat k × n_features array; each element ∈ {-1, 0, 1}.
+    pub projections: Vec<i8>,
+    /// Flat k × (n_bins + 1) Q14-encoded histogram bin edges.
+    /// Projection i's edges start at index i * (n_bins + 1).
+    /// Edge values are floor(real_edge × 2^14) — comparable with z_fp14.
+    pub bin_edges_fp14: Vec<i64>,
+    /// Flat k × n_bins Q10-encoded −log(density) scores (≥ 0).
+    /// Projection i's scores start at index i * n_bins.
+    /// floor(−log(density) × 2^10); capped at 2^31 − 1.
+    pub bin_scores_fp10: Vec<i32>,
+    /// Sum-of-scores threshold in Q10.
+    /// `total_score > anomaly_threshold_fp10` → anomalous record.
+    /// 0 = model not trained; guest skips LODA rule.
+    pub anomaly_threshold_fp10: i64,
 }
 
 // ── Combined guest input ──────────────────────────────────────────────────────
 
 /// The struct the zkVM guest reads from the input stream.
 ///
-/// Bundling telemetry + baselines in one struct keeps the guest's `env::read`
-/// call count at 1, which is cheaper in the STARK proof than two reads.
+/// Bundling telemetry + baselines + LODA model in one struct keeps the guest's
+/// `env::read` call count at 1, which is cheaper in the STARK proof than two reads.
 ///
 /// For records with no available baselines, set all `HostBaselines` fields to
-/// zero — the guest will fall back to the absolute threshold rules.
+/// zero — the guest falls back to absolute threshold rules.
+/// For records with no LODA model, set `loda.k = 0` — the guest skips Rule 11.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetryInput {
     pub telemetry: NetworkTelemetry,
     pub baselines: HostBaselines,
-    pub forest:    IsolationForestModel,
+    pub loda:      LodaModel,
 }
 
 // ── Threat verdict output (committed to zkVM journal) ────────────────────────

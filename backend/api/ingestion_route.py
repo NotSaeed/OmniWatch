@@ -41,7 +41,7 @@ from ingestion.analysis_engine import (
     DDSketchBaseliner,
     detect_schema,
     ensure_pipeline_tables,
-    ForestBaseliner,
+    LodaBaseliner,
     insert_alerts_batch,
     normalize_chunk,
     run_tier1_combined,
@@ -231,7 +231,7 @@ async def _run_pipeline(
 
         # ── B: Chunked analysis ───────────────────────────────────────────────
         await _ws({"type": "pipeline_stage", "stage": "tier1",
-                   "message": "Tier 1: heuristic + Isolation Forest + Z-score…"})
+                   "message": "Tier 1: heuristic + LODA + Z-score…"})
 
         result = await _process_chunks(session_id, csv_path, schema, db, loop, _ws)
 
@@ -242,7 +242,7 @@ async def _run_pipeline(
             chain_root_hash=result["root_hash"],
             chain_tip_hash=result["tip"],
             ddsketch_threshold_fp14=result["ddsketch_fp14"],
-            forest_payload=result["forest_payload"],
+            loda_payload=result["loda_payload"],
         )
 
         # If the chunk reader broke mid-file (e.g. pandas parse error), surface it
@@ -327,7 +327,7 @@ async def _process_chunks(
     Per-chunk pipeline:
       1. normalize_chunk        — column rename to canonical names
       2. time_window_correlate  — per-IP rolling connection count
-      3. run_tier1_combined     — heuristic ∪ IsolationForest ∪ Z-score
+      3. run_tier1_combined     — heuristic ∪ LODA ∪ Z-score
       4. tier2_enrich           — MITRE derivation (Z-score aware)
       5. build_chain            — SHA-256 batch receipt
       6. insert_alerts_batch    — WAL-mode write with lock-retry
@@ -339,8 +339,8 @@ async def _process_chunks(
     root_hash: str | None  = None
     last_broadcast = 0
     read_error     = False   # set True if the chunk reader breaks early (not clean EOF)
-    baseliner        = DDSketchBaseliner()  # accumulates bytes/s across all chunks
-    forest_baseliner = ForestBaseliner()   # accumulates features for IsolationForest
+    baseliner      = DDSketchBaseliner()  # accumulates bytes/s across all chunks
+    loda_baseliner = LodaBaseliner()      # accumulates features for session-level LODA model
 
     try:
         import pandas as pd
@@ -394,14 +394,14 @@ async def _process_chunks(
         _batch_idx   = batch_idx
         _chain_tip   = chain_tip
 
-        _baseliner        = baseliner         # explicit capture for the executor closure
-        _forest_baseliner = forest_baseliner  # explicit capture for the executor closure
+        _baseliner      = baseliner       # explicit capture for the executor closure
+        _loda_baseliner = loda_baseliner  # explicit capture for the executor closure
 
         def _process():
             try:
                 norm      = normalize_chunk(_chunk, _schema)
-                _baseliner.update(norm)         # accumulate bytes/s into DDSketch
-                _forest_baseliner.update(norm)  # accumulate features into IsolationForest
+                _baseliner.update(norm)       # accumulate bytes/s into DDSketch
+                _loda_baseliner.update(norm)  # accumulate features into LODA baseliner
                 norm      = time_window_correlate(norm, window="1min")
                 flagged, baselines = run_tier1_combined(norm, _schema)
 
@@ -465,26 +465,26 @@ async def _process_chunks(
         ddsketch_fp14 / (1 << 14) if ddsketch_fp14 > 0 else 0,
     )
 
-    await loop.run_in_executor(None, forest_baseliner.fit)
-    forest_payload = forest_baseliner.payload()
-    if forest_payload:
+    await loop.run_in_executor(None, loda_baseliner.fit)
+    loda_payload = loda_baseliner.payload()
+    if loda_payload:
         import json as _json
-        _fp = _json.loads(forest_payload)
+        _lp = _json.loads(loda_payload)
         logger.info(
-            "IsolationForest fitted: %d trees, %d nodes, threshold_fp14=%d",
-            len(_fp["tree_roots"]), len(_fp["nodes"]) // 4, _fp["path_length_threshold"],
+            "LODA fitted: k=%d, n_bins=%d, threshold_fp10=%d",
+            _lp["k"], _lp["n_bins"], _lp["anomaly_threshold_fp10"],
         )
     else:
-        logger.info("IsolationForest payload unavailable (too few rows or sklearn missing)")
+        logger.info("LODA payload unavailable (too few rows or numpy missing)")
 
     return {
-        "rows":           rows_total,
-        "alerts":         alerts_total,
-        "tip":            chain_tip or "",
-        "root_hash":      root_hash or "",
-        "ddsketch_fp14":  ddsketch_fp14,
-        "forest_payload": forest_payload,
-        "read_error":     read_error,
+        "rows":          rows_total,
+        "alerts":        alerts_total,
+        "tip":           chain_tip or "",
+        "root_hash":     root_hash or "",
+        "ddsketch_fp14": ddsketch_fp14,
+        "loda_payload":  loda_payload,
+        "read_error":    read_error,
     }
 
 
@@ -550,7 +550,7 @@ async def get_pipeline_session(session_id: str):
             "SELECT session_id, filename, dataset_type, started_at, completed_at, "
             "status, rows_processed, alerts_found, "
             "chain_root_hash, chain_tip_hash, ciso_summary, "
-            "ddsketch_threshold_fp14, forest_payload "
+            "ddsketch_threshold_fp14, loda_payload "
             "FROM pipeline_sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
@@ -573,8 +573,8 @@ async def get_pipeline_session(session_id: str):
         "chain_root_hash":          row[8],
         "chain_tip_hash":           row[9],
         "ciso_summary":             json.loads(row[10]) if row[10] else None,
-        "ddsketch_threshold_fp14":  row[11] or 0,
-        "forest_payload":           json.loads(row[12]) if row[12] else None,
+        "ddsketch_threshold_fp14": row[11] or 0,
+        "loda_payload":            json.loads(row[12]) if row[12] else None,
     }
 
 

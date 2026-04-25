@@ -28,7 +28,7 @@
 #![no_main]
 
 use sha2::{Digest, Sha256};
-use verifier_core::{rules, HostBaselines, IsolationForestModel, NetworkTelemetry, TelemetryInput, ThreatVerdict};
+use verifier_core::{rules, HostBaselines, LodaModel, NetworkTelemetry, TelemetryInput, ThreatVerdict};
 
 risc0_zkvm::guest::entry!(main);
 
@@ -42,13 +42,6 @@ const CONFIDENCE_CAP_SPARSE: u8 = 50;
 // ZSCORE_THRESHOLD = 3000 means |Z| > 3.0.
 // Stored as u64 × 1000 to stay integer-only throughout.
 const ZSCORE_THRESHOLD: u64 = 3_000;
-
-// ── Isolation Forest traversal guard ─────────────────────────────────────────
-//
-// Maximum tree depth to traverse before stopping, regardless of tree structure.
-// With max_samples=64 the actual maximum depth is ceil(log2(64)) = 6, so 64
-// is a generous safety cap that prevents runaway on any malformed tree.
-const MAX_TREE_DEPTH: i32 = 64;
 
 // ── Forensic timing constants (hard properties of specific attack types) ──────
 //
@@ -139,85 +132,87 @@ fn packet_threshold_exceeded(pkt_count: u32, b: &HostBaselines) -> bool {
     b.stddev_pkts_milli > 0 && zscore_pkts(pkt_count, b) > ZSCORE_THRESHOLD
 }
 
-// ── Isolation Forest helpers (pure integer, no float) ────────────────────────
+// ── LODA evaluation (pure integer, no float) ──────────────────────────────────
 
-/// Extract the 4 canonical features from one telemetry record, each pre-scaled
-/// by 2^14 so they can be compared directly against fp14-encoded tree thresholds.
+/// Extract the 4 canonical LODA features as raw integers.
 ///
-/// Feature order (matches Python `_extract_forest_features`):
+/// Feature order (matches Python `_extract_loda_features`):
 ///   [0] bytes_per_sec_kb  = bytes_per_sec / 1024, clamped to [0, 1_000_000]
 ///   [1] packet_count      = packet_count,          clamped to [0, 1_000_000]
 ///   [2] flow_duration_ms  = flow_duration_us / 1000, clamped to [0, 65_535]
 ///   [3] dest_port         = dst_port                 [0, 65_535]
+///
+/// Raw integers (not pre-scaled to Q14) — scaling happens inside `loda_score`
+/// once per projection, not once per feature × tree-node, saving significant cycles.
 #[inline]
-fn extract_features_fp14(t: &NetworkTelemetry) -> [i32; 4] {
-    let bps_kb  = (t.bytes_per_sec() / 1024).min(1_000_000) as i32;
-    let pkts    = (t.packet_count as u64).min(1_000_000) as i32;
-    let dur_ms  = t.duration_ms().min(65_535) as i32;
-    let port    = t.dst_port as i32;
+fn loda_features(t: &NetworkTelemetry) -> [i64; 4] {
     [
-        bps_kb.saturating_mul(16_384),
-        pkts.saturating_mul(16_384),
-        dur_ms.saturating_mul(16_384),
-        port.saturating_mul(16_384),
+        (t.bytes_per_sec() / 1024).min(1_000_000) as i64,
+        (t.packet_count as u64).min(1_000_000) as i64,
+        t.duration_ms().min(65_535) as i64,
+        t.dst_port as i64,
     ]
 }
 
-/// Traverse one isolation tree starting at `root_node_idx`.
-/// Returns the depth at which the query point is isolated (leaf or depth cap).
+/// Compute the LODA anomaly score: sum of Q10-scaled −log(density) across k projections.
 ///
-/// Node layout (stride 4): [feature_index, threshold_fp14, left_global, right_global]
-/// Leaf: feature_index == -1.
-#[inline]
-fn traverse_tree(nodes: &[i32], root_node_idx: usize, features: &[i32; 4]) -> i32 {
-    let mut current = root_node_idx;
-    let mut depth   = 0i32;
-    loop {
-        let base = current * 4;
-        if base + 3 >= nodes.len() {
-            break; // out-of-bounds guard — malformed tree
-        }
-        let feature_idx = nodes[base];
-        if feature_idx < 0 {
-            break; // leaf node
-        }
-        let threshold_fp14 = nodes[base + 1];
-        let left_global    = nodes[base + 2] as usize;
-        let right_global   = nodes[base + 3] as usize;
-
-        let feat_val = features
-            .get(feature_idx as usize)
-            .copied()
-            .unwrap_or(0);
-
-        current = if feat_val <= threshold_fp14 { left_global } else { right_global };
-        depth  += 1;
-        if depth >= MAX_TREE_DEPTH {
-            break; // depth cap
-        }
-    }
-    depth
-}
-
-/// Compute the average path length across the forest, scaled by 2^14.
+/// Returns `None` when the model is unavailable (k == 0 → Rule 11 skipped).
+/// The result is comparable against `model.anomaly_threshold_fp10`:
+///   `loda_score(...) > anomaly_threshold_fp10` → anomalous record.
 ///
-/// Returns `None` when the forest is empty (no trees → Rule 11 skipped).
-/// The result is comparable against `forest.path_length_threshold`:
-///   `avg_path_fp14 < path_length_threshold` → anomalous record.
+/// ## Cycle-count rationale vs. Isolation Forest
+/// IF traverse_tree: branch per node × MAX_DEPTH iterations × n_trees pointer-jump loads.
+/// LODA inner loop:  match-arm add/subtract per feature (4 ops) + linear scan over
+///                   ~10 bin edges — all sequential flat-array accesses, no pointer jumps.
+/// On the RV32IM ISA, match { 1 => z += x,  -1 => z -= x,  _ => {} } compiles to
+/// two conditional branches and one ADD or SUB — zero MUL instructions.
 #[inline]
-fn traverse_forest(forest: &IsolationForestModel, t: &NetworkTelemetry) -> Option<i32> {
-    if forest.tree_roots.is_empty() {
+fn loda_score(model: &LodaModel, t: &NetworkTelemetry) -> Option<i64> {
+    if model.k == 0 || model.n_bins == 0 || model.n_features == 0 {
         return None;
     }
-    let features = extract_features_fp14(t);
-    let n_trees  = forest.tree_roots.len() as i32;
-    let mut total = 0i32;
-    for &root in &forest.tree_roots {
-        let depth = traverse_tree(&forest.nodes, root as usize, &features);
-        total = total.saturating_add(depth);
+    let k  = model.k as usize;
+    let nb = model.n_bins as usize;
+    let nf = model.n_features as usize;
+
+    let features = loda_features(t);
+    let mut total_score: i64 = 0;
+
+    for i in 0..k {
+        // ── Sparse projection (zero multiplication) ──────────────────────────
+        // w_ij ∈ {-1, 0, 1}: feature contribution is a single ADD or SUB,
+        // or is skipped entirely when w_ij == 0.  No MUL on RV32IM.
+        let mut z: i64 = 0;
+        for j in 0..nf.min(4) {
+            match model.projections[i * nf + j] {
+                1  => z += features[j],
+                -1 => z -= features[j],
+                _  => {}  // 0: skip — saves one ADD per zero weight
+            }
+        }
+
+        // Scale to Q14 so z_fp14 is comparable with Q14-encoded bin edges.
+        // One saturating_mul per projection (not per feature × node).
+        let z_fp14 = z.saturating_mul(16_384);
+
+        // ── Bin lookup (linear scan, ~10 edges, flat array) ──────────────────
+        let edge_base  = i * (nb + 1);
+        let score_base = i * nb;
+        let mut bin_idx = nb.saturating_sub(1); // default: last bin (right tail)
+        for b in 0..nb {
+            if z_fp14 < model.bin_edges_fp14[edge_base + b + 1] {
+                bin_idx = b;
+                break;
+            }
+        }
+
+        // ── Score accumulation ────────────────────────────────────────────────
+        total_score = total_score.saturating_add(
+            model.bin_scores_fp10[score_base + bin_idx] as i64,
+        );
     }
-    // Multiply numerator by 16_384 before dividing so the result is fp14-scaled.
-    Some(total.saturating_mul(16_384) / n_trees)
+
+    Some(total_score)
 }
 
 // ── Entry point ──────────────────────────────────────────────────────────────
@@ -377,14 +372,17 @@ fn evaluate(input: &TelemetryInput, input_hash: [u8; 32]) -> ThreatVerdict {
         }
     }
 
-    // ── Rule 11: Isolation Forest multivariate anomaly ────────────────────
-    // The forest was trained on 4 canonical features from historical session
-    // data.  Records isolated early (short average path length) are flagged.
-    // Only fires when the forest is available and no higher-confidence verdict
-    // has already been set by the volumetric or brute-force rules.
-    if let Some(avg_path_fp14) = traverse_forest(&input.forest, t) {
-        if avg_path_fp14 < input.forest.path_length_threshold {
-            fired |= rules::ISOLATION_FOREST_ANOMALY;
+    // ── Rule 11: LODA multivariate anomaly ───────────────────────────────
+    // The LODA model was trained on 4 canonical features from historical session
+    // data.  Records whose sum of per-projection −log(density) scores exceeds the
+    // calibrated threshold fall in a low-density region of the projected feature
+    // space and are flagged as anomalous.
+    //
+    // Projection weights ∈ {-1, 0, 1} → inner loop uses only ADD/SUB, no MUL.
+    // Bin lookup iterates ≤ n_bins (~10) contiguous array entries — no pointer jumps.
+    if let Some(score) = loda_score(&input.loda, t) {
+        if score > input.loda.anomaly_threshold_fp10 {
+            fired |= rules::LODA_ANOMALY;
             if cat == 0 {
                 cat  = 5; // ANOMALY
                 conf = conf.max(72);
