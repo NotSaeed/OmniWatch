@@ -1,0 +1,505 @@
+% ============================================================================
+%  OmniWatch Enterprise AI-SOC — Architecture & Performance Validation Report
+%  Version 2 · May 2026
+%  Compile with: pdflatex main.tex (×2 for TOC)
+% ============================================================================
+\documentclass[12pt,a4paper]{article}
+
+% ── Packages ────────────────────────────────────────────────────────────────
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage[hidelinks]{hyperref}
+
+% ── Code listing style ──────────────────────────────────────────────────────
+\definecolor{codebg}{HTML}{F5F5F5}
+\definecolor{codeframe}{HTML}{CCCCCC}
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  xleftmargin=6pt,
+  xrightmargin=6pt,
+  aboveskip=8pt,
+  belowskip=8pt,
+}
+
+% ── Header / Footer ────────────────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small OmniWatch AI-SOC --- Validation Report v2}
+\fancyhead[R]{\small UMPSA --- Faculty of Computing}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ── Section formatting ─────────────────────────────────────────────────────
+\titleformat{\section}{\Large\bfseries}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.5em}{}
+
+% ============================================================================
+\begin{document}
+
+% ── Title Page ──────────────────────────────────────────────────────────────
+\begin{titlepage}
+\centering
+\vspace*{1.5cm}
+
+{\large\textbf{Universiti Malaysia Pahang Al-Sultan Abdullah}}\\[4pt]
+{\large Faculty of Computing}\\[2cm]
+
+\rule{\textwidth}{1pt}\\[0.6cm]
+{\LARGE\bfseries OmniWatch Enterprise AI-SOC:\\[6pt]
+Architecture \& Performance\\[6pt]
+Validation Report (v2)}\\[0.4cm]
+\rule{\textwidth}{1pt}\\[1cm]
+
+{\large Internal Technical Documentation}\\[0.4cm]
+{\large Final Year Project Report}\\[2cm]
+
+\begin{tabular}{ll}
+\textbf{Supervised by:} & Puan Wan Nurulsafawati Binti Wan Manan \\[12pt]
+\textbf{Prepared by:}   & SAEED MOHAMMED KHALED ABDULAZIZ -- CF23006 \\
+                         & BA NAFEA ABDULLAH HADDAD OBAID -- CB23011 \\
+                         & ALHAMED MOHAMMED ABDULLAH MOHAMMED -- CB23010 \\
+\end{tabular}
+
+\vfill
+{\large May 2026}
+
+\end{titlepage}
+
+% ── Abstract ────────────────────────────────────────────────────────────────
+\section*{Abstract}
+\addcontentsline{toc}{section}{Abstract}
+
+OmniWatch is an Enterprise AI Security Operations Centre (AI-SOC) platform
+engineered for governed post-detection response, auditability, and analyst
+supervision in Operational Technology and Industrial Control Systems (OT/ICS)
+environments. The platform implements a novel \emph{Split-Brain} architecture:
+a stateful Python host performs floating-point machine-learning baseline
+computation, while a stateless Rust guest program executes inside a
+RISC Zero zero-knowledge virtual machine (zkVM), performing purely
+integer threat evaluation on the FPU-less RV32IM instruction set
+architecture and producing a cryptographically unforgeable STARK proof
+of that computation. This approach ensures verifiable OT/ICS threat detection
+and post-detection governance, preventing automated remediation actions from
+triggering without mathematical proof of honesty.
+
+\newpage
+\tableofcontents
+\newpage
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Introduction}
+% ════════════════════════════════════════════════════════════════════════════
+
+OmniWatch addresses a critical gap in industrial cyber-security: the
+absence of verifiable, auditable post-detection governance for OT/ICS
+environments. Modern Security Operations Centres rely on automated SOAR
+(Security Orchestration, Automation and Response) workflows that can
+execute remediation actions---firewall blocks, service restarts,
+isolation commands---without cryptographic proof that the triggering
+detection was computed honestly over authentic telemetry.
+
+The platform serves three simultaneous mandates:
+
+\begin{enumerate}
+  \item \textbf{Academic benchmark} --- quantifying the latency overhead
+        of zero-knowledge virtual machines at the network edge.
+  \item \textbf{Enterprise AI-SOC} --- an end-to-end pipeline ingesting
+        large-scale real-world datasets (CIC-IDS-2017, BOTSv3) through
+        three ML detection pillars with session-scoped SQLite storage,
+        SHA-256 chain integrity, and a React dashboard.
+  \item \textbf{Cyber-physical testbed} --- a hardware diorama connecting
+        an ESP32 Modbus TCP server, Raspberry Pi attack and sensor nodes,
+        and a command-node workstation to form a verifiable OT threat-detection loop.
+\end{enumerate}
+
+This research provides a substantial contribution to \textbf{SDG~9} (Industry,
+Innovation and Infrastructure) through its novel zero-knowledge verification
+pipeline for industrial control systems, and \textbf{SDG~11} (Sustainable Cities
+and Communities) through its applicability to critical infrastructure governance.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Bounded Threat Model and Limitations}
+% ════════════════════════════════════════════════════════════════════════════
+
+The OmniWatch architecture incorporates several strict operational
+limitations that define how the entire system must be interpreted.
+These are not merely ``due diligence'' details, but first-class design
+constraints that shape the platform's deployment posture.
+
+\subsection{Computational vs. Sensing Integrity}
+
+The trust boundary explicitly terminates at the Raspberry Pi~4 edge node.
+The system lacks TPM~2.0 remote attestation and Secure Boot; consequently,
+the Pi~4 operating system is the primary attack vector for pre-proof data
+manipulation. The architecture achieves strict \textbf{Computational
+Integrity} over supplied data (proving the detection algorithms were
+executed honestly), but does not guarantee \textbf{Sensing Integrity}
+(proving the data genuinely represents the physical reality of the OT network).
+
+\subsection{Static Guest Recompilation Trade-off}
+
+Deterministic threat rules are hardcoded directly into the Rust Guest ELF.
+Adding or modifying rules requires a full recompile and reprovisioning
+of the zkVM guest image ID (\texttt{VERIFIER\_GUEST\_ID}). This is an accepted
+architectural trade-off, preferring absolute state immutability over the
+flexibility of hot-reloading rules.
+
+\subsection{Pedagogical Physical Simulation}
+
+The cyber-physical testbed utilizes an ESP32 operating Modbus TCP over Wi-Fi.
+However, NCA OTCC-1:2022 mandates strict restriction of wireless technologies
+in production OT/ICS networks. This physical setup is therefore classified as
+a pedagogical simulation only, demonstrating the verification loop without
+meeting the physical layer fidelity required for true SCADA deployments.
+
+To mitigate 2.4\,GHz Wi-Fi spectrum saturation commonly experienced at exhibition venues, the pipeline includes a \textbf{Deterministic Replay Fallback} mode. This accepts pre-recorded PCAP captures and allows out-of-band truncation of the SQLite Spent-Receipt Registry. This is an accepted procedural bypass explicitly scoped to pedagogical demonstration contexts.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{System Architecture}
+% ════════════════════════════════════════════════════════════════════════════
+
+\subsection{Hardware Partitioning and Physical Simulation}
+
+The infrastructure uses strict physical service isolation to prevent
+computational bottlenecks across the cyber-physical loop.
+
+\begin{table}[htbp]
+\centering
+\caption{Cyber-Physical Testbed Hardware Allocation}
+\label{tab:hardware}
+\begin{tabular}{@{}llp{7cm}@{}}
+\toprule
+\textbf{Node} & \textbf{Hardware} & \textbf{Role} \\
+\midrule
+OT Target         & ESP32 Type-C Wi-Fi/BT & Modbus TCP server simulating SCADA;
+                                             drives 5\,V pumps and LED indicators \\
+Attacker           & Pi Zero 2W + TP-Link TL-WN722N & Executes FC\,05 (coil write) and
+                                                       FC\,16 (register block write) payloads \\
+Network Sensor     & Pi 4 Model B (128\,GB) & Passive TAP listener running Zeek +
+                                              CISA ICSNPP Modbus; serialises flows
+                                              to bincode \\
+Command Node       & Local workstation & RISC Zero STARK prover, React/WASM
+                                         verification, FastAPI backend, Ollama LLM \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{The Split-Brain Execution Model}
+
+The central architectural invariant is a hard execution boundary between
+the Python host and the Rust zkVM guest:
+
+\begin{itemize}
+  \item \textbf{Python Host} --- Stateful; accumulates baselines across
+        chunks using unrestricted floating-point arithmetic
+        (\texttt{numpy}, \texttt{sklearn}, DDSketch). Outputs ML
+        parameters: \texttt{p99}, \texttt{mean}, \texttt{stddev},
+        and trained LODA/CUSUM models.
+  \item \textbf{Rust Guest (zkVM)} --- Stateless; evaluated independently
+        per record on the RV32IM ISA with no hardware FPU. Commits a
+        \texttt{ThreatVerdict} to the STARK journal containing
+        \texttt{input\_hash}, \texttt{is\_threat}, \texttt{category},
+        and \texttt{confidence\_pct}.
+\end{itemize}
+
+\subsection{Q14 Fixed-Point Encoding}
+
+To bridge the execution boundary, all floating-point ML outputs are
+translated into a strict 14-bit fractional integer representation:
+
+\begin{equation}
+  Z = \lfloor x \times 2^{14} \rfloor = \lfloor x \times 16384 \rfloor
+\end{equation}
+
+Addition and subtraction require no correction. Multiplication requires
+a right-shift with rounding:
+
+\begin{equation}
+  Z_{\text{product}} = \frac{Z_a \times Z_b + 2^{13}}{2^{14}}
+\end{equation}
+
+All Q14 multiplications use Rust's \texttt{saturating\_mul} to prevent
+integer overflow from producing incorrect threat verdicts inside the zkVM.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Data Ingestion and Serialization}
+% ════════════════════════════════════════════════════════════════════════════
+
+\subsection{Polars Streaming Pipeline and Bounded Memory}
+
+Large CSV datasets are processed through a \textbf{Polars batched CSV reader}
+that eliminates out-of-memory risk. The implementation uses
+\texttt{pl.read\_csv\_batched()} with a batch size of 10\,000 rows.
+Only one batch resides in RAM at a time, maintaining a peak footprint of
+approximately 50--200\,MB regardless of file size. A pandas chunked reader
+serves as a fallback when Polars is unavailable.
+
+\subsection{Edge Bincode Serialization}
+
+The Pi~4 edge node serialises each captured Modbus flow into a
+\texttt{TelemetryInput} struct encoded in bincode (little-endian, no
+padding). This eliminates JSON parsing overhead inside the zkVM, reducing
+proof-generation cycle counts.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Detection Pipeline}
+% ════════════════════════════════════════════════════════════════════════════
+
+The detection engine comprises three pillars, specifically structured to
+minimise multiplication instructions on the FPU-less RV32IM ISA.
+
+\subsection{DDSketch Volumetric Baselining}
+
+The Python host's \texttt{DDSketchBaseliner} accumulates per-flow
+bytes/s observations across all pipeline chunks, returning a Q14-encoded
+99th-percentile threshold: $T = \lfloor p_{99} \times 2^{14} \rfloor$.
+The Rust guest compares \texttt{current\_scaled = bytes\_per\_sec}
+$\times 16384$ against $T$, requiring no floating-point arithmetic.
+
+\subsection{LODA Multivariate Anomaly Detection}
+
+LODA replaces Isolation Forest to bypass cache-hostile pointer jumps and
+multiplication-heavy tree nodes. LODA uses sparse projection vectors
+with weights $w_{ij} \in \{-1, 0, 1\}$, compiling down to single-cycle
+\texttt{ADD/SUB} instructions:
+
+\begin{lstlisting}[language=Rust,caption={LODA zero-MUL projection}]
+match model.projections[i * nf + j] {
+    1  => z += features[j],   // ADD
+    -1 => z -= features[j],   // SUB
+    _  => {}
+}
+\end{lstlisting}
+
+\subsection{Zero-MUL CUSUM Beaconing Detection}
+
+The CUSUM pipeline detects periodic C2 beaconing using only \texttt{ADD},
+\texttt{SUB}, and bitwise operations. The DAS-CUSUM accumulator proves:
+
+\begin{equation}
+  S_n[i] = \max\!\big(0,\; S_{n-1}[i] + B_n[i] - k\big)
+\end{equation}
+
+where $B_n[i]$ is the Q14-encoded L1 score and $k$ is the drift parameter.
+The guest instruction count per period relies on \texttt{saturating\_add},
+\texttt{saturating\_sub}, and \texttt{.max(0)}---achieving zero multiplications.
+
+\subsection{zkVM Threat Rule Evaluation Matrix}
+
+In addition to the ML pillars, the Rust guest evaluates a deterministic set of threat rules against the \texttt{TelemetryInput}. The evaluation yields a 14-bit flag matrix committed to the STARK journal. Key flags include:
+
+\begin{table}[htbp]
+\centering
+\caption{Selected zkVM Threat Evaluation Rules}
+\label{tab:threat_rules}
+\begin{tabular}{@{}llp{8cm}@{}}
+\toprule
+\textbf{Bit} & \textbf{Flag} & \textbf{Trigger Condition} \\
+\midrule
+0  & \texttt{HIGH\_RATE} & Absolute bytes/s $> 1$\,MB (no baseline required) \\
+2  & \texttt{BRUTE\_FORCE} & Port $\in \{21, 22\}$ $\wedge$ packet count $>$ threshold \\
+5  & \texttt{EXFIL\_PATTERN} & Outbound $\wedge$ bytes/s $> 500$\,KB $\wedge$ duration $> 5$\,s \\
+8  & \texttt{MODBUS\_WRITE} & Modbus function code $\in \{5, 6, 15, 16\}$ \\
+11 & \texttt{DDSKETCH\_VOLUME} & Q14-scaled bytes/s $>$ \texttt{ddsketch\_threshold\_fp14} \\
+12 & \texttt{LODA\_ANOMALY} & Sparse projection sum $>$ \texttt{anomaly\_threshold\_fp10} \\
+13 & \texttt{CUSUM\_BEACON} & DAS-CUSUM $S_n >$ threshold on any candidate period \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Cryptographic Verification and Governance}
+% ════════════════════════════════════════════════════════════════════════════
+
+\subsection{STARK Proof Flow}
+
+The system generates raw STARK receipts to prove computational integrity.
+The project accepts larger proof sizes ($\sim$217--250\,KB) rather than using
+optional Groth16 SNARK wrappers. While SNARK compression would drastically
+reduce proof size, it introduces a one-time trusted-setup ceremony. Rejecting
+this preserves a completely \textbf{trusted-setup-free} cryptographic environment,
+a deliberate trade-off suitable for local high-speed network deployments.
+
+\subsection{Dual-Verification SOAR Gate}
+
+SOAR remediation requires a dual-factor cryptographic gate:
+
+\begin{enumerate}
+  \item A machine-generated STARK receipt ($\sim$217--250\,KB).
+  \item A human-generated FIDO2/WebAuthn assertion (ECDSA P-256).
+\end{enumerate}
+
+To satisfy WebAuthn's strict Relying Party ID requirements in a testbed environment, the command node utilizes a local DNS mapping (\texttt{omniwatch.local} $\rightarrow$ \texttt{127.0.0.1}) secured by locally trusted \texttt{mkcert} TLS certificates. Only if both validations pass concurrently is remediation authorised, ensuring cryptographically signed human-in-the-loop governance.
+
+\subsection{SHA-256 Chain and Spent-Receipt Race Prevention}
+
+The Spent-Receipt Registry uses SQLite's \texttt{INSERT OR IGNORE}
+pattern with WAL journal mode to prevent Time-of-Check-to-Time-of-Use
+(TOCTOU) replay attacks. This forms the base of a Triple-Layer Audit Trail,
+supported by a SHA-256 hash chain ensuring continuous database row integrity,
+and STARK proofs verifying the evaluation logic.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Frontend and Session Management Architecture}
+% ════════════════════════════════════════════════════════════════════════════
+
+The frontend architecture is built on React, utilizing TanStack Query for
+state management and React Three Fiber for WebGL visualisations.
+
+\subsection{Session-Scoped State and Data Switching}
+
+Active session identity is held in the application's root state and propagated
+throughout the component tree. TanStack Query caching uses the \texttt{session\_id}
+as part of its query key array. When a new Polars ingestion pipeline completes,
+the session ID updates, triggering an automatic cache invalidation and UI
+refresh without requiring a hard page reload.
+
+The \texttt{LogExplorer} component implements dynamic data source switching,
+allowing the same UI to render live pipeline alerts (via the \texttt{telemetry\_alerts}
+table) or legacy static datasets (CIC-IDS-2017, BOTSv3) by mapping different
+backend schemas into a canonical 5-tuple \texttt{CicidsLog} shape.
+
+\subsection{Splunk-Tier Network Telemetry View}
+
+The primary analyst interface presents network flows as a dense 5-tuple
+(Source IP/Port, Destination IP/Port, Protocol). Following Ecological Interface
+Design (EID) principles, row interactions provide progressive disclosure: clicking
+a row expands a detail panel containing the raw JSON feature snapshot and
+an ``Analyze with AI'' action, which branches into the LLM incident report workflow.
+
+\subsection{Asynchronous WASM Verification}
+
+The WebAssembly module (\texttt{risc0-zkvm}) is instantiated in a dedicated
+background Web Worker on the client browser. This serves as an EID UX
+optimization: client-side verification updates the visual state asynchronously
+without blocking the main thread. However, the authoritative verification is
+always strictly enforced via a server-side Python-to-Rust invocation.
+
+\subsection{Spatial WebGL Trust-Chain DAG}
+
+The verification state is visualized in React Three Fiber as a 3D Directed
+Acyclic Graph (DAG) mapping the cryptographic trust chain from Raw Telemetry
+to STARK Receipt and FIDO2 ECDSA. Each node transitions from a pending state
+to a verified state, using shape and color redundancy to maintain EID
+accessibility under deuteranopia simulation. If the WebGL context fails to
+initialize, the interface degrades gracefully to a 2D CSS-grid matrix.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{LLM RAG Contextualization}
+% ════════════════════════════════════════════════════════════════════════════
+
+The platform integrates a local Large Language Model (Phi-3-Mini) to serve as a
+translation and contextualization engine for security analysts. Crucially,
+the LLM has zero normative weight in the threat detection verdict, which is
+exclusively determined by the mathematical zkVM evaluation.
+
+\subsection{Embedding Precision Constraints}
+
+While the generation model operates using INT4 quantization for memory efficiency
+on CPU deployments, the embedding model is strictly locked to FP32 or FP16.
+Mixed-precision retrieval (where embeddings are aggressively quantized)
+degrades cosine similarity accuracy due to quantization noise accumulating
+in high-dimensional dot products. This constraint ensures retrieval precision
+remains above the calibrated threshold.
+
+\subsection{Source Grounding Enforcement}
+
+To mitigate LLM hallucination risks in critical OT contexts, the UI enforces
+strict visible source grounding. The exact document excerpt or raw JSON telemetry
+snapshot is displayed alongside the LLM summary. If retrieval confidence falls
+below the operational threshold, the UI enters a hard ``No Grounding Available''
+state and suppresses the LLM output entirely, preventing operators from acting
+on fabricated industrial context.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Performance, Evaluation, and Trade-offs}
+% ════════════════════════════════════════════════════════════════════════════
+
+\begin{table}[htbp]
+\centering
+\caption{OmniWatch Performance Metrics Summary}
+\label{tab:perf}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Metric} & \textbf{Value} & \textbf{Notes} \\
+\midrule
+End-to-end triage latency  & 15--32\,s & Operator wait time (STARK + LLM) \\
+STARK proof generation     & 9--17\,s  & RISC Zero local CPU prover \\
+Phi-3 Mini RAG throughput  & 10--25 tokens/s & INT4 quantised, CPU \\
+Raw STARK receipt size     & $\sim$217--250\,KB & Bincode $\rightarrow$ base64 \\
+Ingestion memory footprint & 50--200\,MB & Polars batched reader \\
+Technology Readiness Level & TRL 4--5  & Laboratory + simulated OT testbed \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The measured 15--32 second triage latency validates the project's core
+research hypothesis: current verifiable computation and local generative
+AI are too slow for real-time automated mitigation. This empirically justifies
+the necessity of cryptographically signed human-in-the-loop authorization
+as the superior operational control for post-detection governance.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Commercial and Regulatory Alignment}
+% ════════════════════════════════════════════════════════════════════════════
+
+The platform explicitly aligns with the logging, monitoring, and
+audit-trail objectives of NCA OTCC-1:2022 Subdomain~2-11
+(Cybersecurity Event Logs and Monitoring Management). By requiring
+mathematically verified human authorization before any automated
+remediation action, OmniWatch addresses the stringent operational safety
+requirements of critical water utility infrastructure and Vision~2030
+smart city deployments in the Kingdom of Saudi Arabia.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Conclusion}
+% ════════════════════════════════════════════════════════════════════════════
+
+OmniWatch demonstrates that zero-knowledge proof systems can be
+practically integrated into OT/ICS security operations. The Split-Brain
+architecture resolves the fundamental tension between floating-point
+machine learning and the integer-only constraints of the RV32IM ISA.
+By combining a dual-verification SOAR gate with a triple-layer audit
+trail, the platform offers a robust, commercially aligned deployment
+posture that effectively transitions threat response from probabilistic
+black-box automation into mathematically deterministic, human-supervised
+governance.
+
+% ── Bibliography placeholder ───────────────────────────────────────────────
+\newpage
+\section*{References}
+\addcontentsline{toc}{section}{References}
+
+\begin{enumerate}
+  \item RISC Zero, Inc., ``RISC Zero zkVM Documentation,''
+        \url{https://dev.risczero.com/}, 2024.
+  \item Canadian Institute for Cybersecurity, ``CIC-IDS-2017 Dataset,''
+        University of New Brunswick, 2017.
+  \item Splunk, Inc., ``Boss of the SOC Dataset Version 3 (BOTSv3),'' 2019.
+  \item National Cybersecurity Authority (NCA), Kingdom of Saudi Arabia,
+        ``Operational Technology Cybersecurity Controls (OTCC-1:2022),'' 2022.
+  \item C.~Pevny, ``Loda: Lightweight on-line detector of anomalies,''
+        \textit{Machine Learning}, vol.~102, no.~2, pp.~275--304, 2016.
+  \item E.~S.~Page, ``Continuous inspection schemes,''
+        \textit{Biometrika}, vol.~41, no.~1/2, pp.~100--115, 1954.
+  \item C.~Masson, J.~E.~Rim, and H.~K.~Lee, ``DDSketch: A fast and
+        fully-mergeable quantile sketch with relative-error guarantees,''
+        \textit{Proc.\ VLDB Endowment}, vol.~12, no.~12, 2019.
+  \item W3C and FIDO Alliance, ``Web Authentication: An API for accessing
+        Public Key Credentials (Level 2),'' 2021.
+\end{enumerate}
+
+\end{document}
