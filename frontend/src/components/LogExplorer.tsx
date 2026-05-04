@@ -238,13 +238,12 @@ function Chip({ label, onRemove }: { label: string; onRemove: () => void }) {
 // ── Deep-link filter bag ──────────────────────────────────────────────────────
 
 export interface LogFilters {
-  source_ip?:     string;
-  dest_ip?:       string;
-  dest_port?:     string;
-  mitre?:         string;
-  severity?:      string;
-  label?:         string;
-  global_search?: string;
+  source_ip?: string;
+  dest_ip?:   string;
+  dest_port?: string;
+  mitre?:     string;
+  severity?:  string;
+  label?:     string;
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -268,7 +267,7 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
   const [mitre,     setMitre]     = useState("");
   const [severity,  setSeverity]  = useState<Severity | "">("");
   // Legacy-mode unified search + label
-  const [globalSearch, setGlobalSearch] = useState("");
+  const [search,    setSearch]    = useState("");
   const [label,     setLabel]     = useState("");
 
   const [offset,       setOffset]       = useState(0);
@@ -292,7 +291,7 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
   const [activeDestPort,  setActiveDestPort]  = useState("");
   const [activeMitre,     setActiveMitre]     = useState("");
   const [activeSeverity,  setActiveSeverity]  = useState<Severity | "">("");
-  const [activeGlobalSearch, setActiveGlobalSearch] = useState("");
+  const [activeSearch,    setActiveSearch]    = useState("");
   const [activeLabel,     setActiveLabel]     = useState("");
 
   // Track which initialFilters object we've already applied to avoid re-applying on re-renders
@@ -303,16 +302,12 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
     if (!initialFilters || appliedFiltersRef.current === initialFilters) return;
     appliedFiltersRef.current = initialFilters;
     const f = initialFilters;
-    
-    // Set to new value or reset to empty if undefined
-    setSourceIp(f.source_ip ?? ""); setActiveSourceIp(f.source_ip ?? "");
-    setDestIp(f.dest_ip ?? ""); setActiveDestIp(f.dest_ip ?? "");
-    setDestPort(f.dest_port ?? ""); setActiveDestPort(f.dest_port ?? "");
-    setMitre(f.mitre ?? ""); setActiveMitre(f.mitre ?? "");
-    setSeverity((f.severity as Severity) ?? ""); setActiveSeverity((f.severity as Severity) ?? "");
-    setLabel(f.label ?? ""); setActiveLabel(f.label ?? "");
-    setGlobalSearch(f.global_search ?? ""); setActiveGlobalSearch(f.global_search ?? "");
-    
+    if (f.source_ip !== undefined) { setSourceIp(f.source_ip);  setActiveSourceIp(f.source_ip); }
+    if (f.dest_ip   !== undefined) { setDestIp(f.dest_ip);      setActiveDestIp(f.dest_ip);     }
+    if (f.dest_port !== undefined) { setDestPort(f.dest_port);  setActiveDestPort(f.dest_port); }
+    if (f.mitre     !== undefined) { setMitre(f.mitre);         setActiveMitre(f.mitre);        }
+    if (f.severity  !== undefined) { setSeverity(f.severity as Severity | ""); setActiveSeverity(f.severity as Severity | ""); }
+    if (f.label     !== undefined) { setLabel(f.label);         setActiveLabel(f.label);        }
     setOffset(0);
   }, [initialFilters]);
 
@@ -324,35 +319,22 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
     if (params.has("source_ip")) { setSourceIp(params.get("source_ip")!); setActiveSourceIp(params.get("source_ip")!); hasParams = true; }
     if (params.has("dest_ip"))   { setDestIp(params.get("dest_ip")!);     setActiveDestIp(params.get("dest_ip")!);     hasParams = true; }
     if (params.has("dest_port")) { setDestPort(params.get("dest_port")!); setActiveDestPort(params.get("dest_port")!); hasParams = true; }
-    if (params.has("mitre_id"))  { setMitre(params.get("mitre_id")!);     setActiveMitre(params.get("mitre_id")!);     hasParams = true; }
-    else if (params.has("mitre")){ setMitre(params.get("mitre")!);        setActiveMitre(params.get("mitre")!);        hasParams = true; }
+    if (params.has("mitre"))     { setMitre(params.get("mitre")!);        setActiveMitre(params.get("mitre")!);        hasParams = true; }
     if (params.has("severity"))  { setSeverity(params.get("severity")! as Severity); setActiveSeverity(params.get("severity")! as Severity); hasParams = true; }
-    if (params.has("global_search")){ setGlobalSearch(params.get("global_search")!); setActiveGlobalSearch(params.get("global_search")!); hasParams = true; }
-    else if (params.has("search")){ setGlobalSearch(params.get("search")!); setActiveGlobalSearch(params.get("search")!); hasParams = true; }
+    if (params.has("search"))    { setSearch(params.get("search")!);      setActiveSearch(params.get("search")!);      hasParams = true; }
 
     if (hasParams) {
       setOffset(0);
     }
   }, []);
 
-  const prevSessionIdRef = useRef<string | null | undefined>(undefined);
-
   // Reset filters and page when the active session changes
   useEffect(() => {
-    if (prevSessionIdRef.current === undefined) {
-      prevSessionIdRef.current = sessionId;
-      return;
-    }
-    if (prevSessionIdRef.current === sessionId) {
-      return;
-    }
-    prevSessionIdRef.current = sessionId;
-
     setOffset(0);
     setSourceIp(""); setDestIp(""); setDestPort(""); setMitre("");
-    setSeverity(""); setGlobalSearch(""); setLabel("");
+    setSeverity(""); setSearch(""); setLabel("");
     setActiveSourceIp(""); setActiveDestIp(""); setActiveDestPort(""); setActiveMitre("");
-    setActiveSeverity(""); setActiveGlobalSearch(""); setActiveLabel("");
+    setActiveSeverity(""); setActiveSearch(""); setActiveLabel("");
     setAiDrawerOpen(false);
     setFocusedIdx(-1);
     appliedFiltersRef.current = null; // allow next initialFilters to re-apply
@@ -384,7 +366,7 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
 
   // ── Pipeline alerts query (active session) ──────────────────────────────────
   const { data: pipelineAlertsResponse, isFetching: pipelineFetching } = useQuery({
-    queryKey: ["logs", sessionId, activeSourceIp, activeDestIp, activeDestPort, activeMitre, activeSeverity, activeGlobalSearch, offset],
+    queryKey: ["logs", sessionId, activeSourceIp, activeDestIp, activeDestPort, activeMitre, activeSeverity, activeSearch, offset],
     queryFn: () => api.getPipelineAlerts({
       session_id: sessionId!,
       source_ip:  activeSourceIp  || undefined,
@@ -392,7 +374,7 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
       dest_port:  activeDestPort  || undefined,
       mitre:      activeMitre     || undefined,
       severity:   activeSeverity  || undefined,
-      global_search: activeGlobalSearch || undefined,
+      search:     activeSearch    || undefined,
       limit:      PAGE_SIZE,
       offset,
     }),
@@ -409,13 +391,13 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
   const legacyDataset = isBotsOnly ? "botsv3" : "cicids";
 
   const { data: rawLogs = [], isFetching: legacyFetching } = useQuery({
-    queryKey: ["logs", legacyDataset, activeGlobalSearch, activeSeverity, activeLabel, offset],
+    queryKey: ["logs", legacyDataset, activeSearch, activeSeverity, activeLabel, offset],
     queryFn: () => {
       if (legacyDataset === "botsv3") {
-        return api.getBotsv3Logs({ search: activeGlobalSearch, limit: PAGE_SIZE, offset });
+        return api.getBotsv3Logs({ search: activeSearch, limit: PAGE_SIZE, offset });
       }
       return api.getCicidsLogs({
-        search: activeGlobalSearch, severity: activeSeverity,
+        search: activeSearch, severity: activeSeverity,
         label: activeLabel, limit: PAGE_SIZE, offset,
       });
     },
@@ -434,16 +416,16 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
     setActiveDestPort(destPort);
     setActiveMitre(mitre);
     setActiveSeverity(severity);
-    setActiveGlobalSearch(globalSearch);
+    setActiveSearch(search);
     setActiveLabel(label);
     setOffset(0);
-  }, [sourceIp, destIp, destPort, mitre, severity, globalSearch, label]);
+  }, [sourceIp, destIp, destPort, mitre, severity, search, label]);
 
   const clearFilters = useCallback(() => {
     setSourceIp(""); setDestIp(""); setDestPort(""); setMitre("");
-    setSeverity(""); setGlobalSearch(""); setLabel("");
+    setSeverity(""); setSearch(""); setLabel("");
     setActiveSourceIp(""); setActiveDestIp(""); setActiveDestPort(""); setActiveMitre("");
-    setActiveSeverity(""); setActiveGlobalSearch(""); setActiveLabel("");
+    setActiveSeverity(""); setActiveSearch(""); setActiveLabel("");
     setOffset(0);
     appliedFiltersRef.current = null;
   }, []);
@@ -591,10 +573,10 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
           /* ── Pipeline mode: faceted field-specific filters ── */
           <>
             {/* Active-filter chips — show what's currently applied */}
-            {(activeSourceIp || activeDestIp || activeDestPort || activeMitre || activeSeverity || activeGlobalSearch) && (
+            {(activeSourceIp || activeDestIp || activeDestPort || activeMitre || activeSeverity || activeSearch) && (
               <div className="flex flex-wrap items-center gap-1 w-full pb-1.5" style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
                 <span className="text-[9px] uppercase tracking-wider font-semibold mr-1" style={{ color: "#3d3f4a" }}>Active:</span>
-                {activeGlobalSearch && <Chip label={`search: ${activeGlobalSearch}`} onRemove={() => { setGlobalSearch(""); setActiveGlobalSearch(""); setOffset(0); }} />}
+                {activeSearch    && <Chip label={`search: ${activeSearch}`} onRemove={() => { setSearch(""); setActiveSearch(""); setOffset(0); }} />}
                 {activeSourceIp  && <Chip label={`src: ${activeSourceIp}`}  onRemove={() => { setSourceIp(""); setActiveSourceIp(""); setOffset(0); }} />}
                 {activeDestIp    && <Chip label={`dst: ${activeDestIp}`}    onRemove={() => { setDestIp(""); setActiveDestIp(""); setOffset(0); }} />}
                 {activeDestPort  && <Chip label={`port: ${activeDestPort}`} onRemove={() => { setDestPort(""); setActiveDestPort(""); setOffset(0); }} />}
@@ -602,8 +584,8 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
                 {activeSeverity  && <Chip label={`sev: ${activeSeverity}`}  onRemove={() => { setSeverity(""); setActiveSeverity(""); setOffset(0); }} />}
               </div>
             )}
-            <FacetInput ref={searchInputRef} placeholder="Global Search… (/)" value={globalSearch}
-              onChange={setGlobalSearch} onEnter={runSearch} width={150} />
+            <FacetInput ref={searchInputRef} placeholder="Global Search… (/)" value={search}
+              onChange={setSearch} onEnter={runSearch} width={150} />
             <FacetInput placeholder="Src IP…" value={sourceIp}
               onChange={setSourceIp} onEnter={runSearch} width={110} />
             <FacetInput placeholder="Dst IP…" value={destIp}
@@ -626,7 +608,7 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
               style={{ background: "rgba(6,182,212,0.15)", border: "1px solid rgba(6,182,212,0.35)", color: "#67e8f9" }}>
               Hunt
             </button>
-            {(activeSourceIp || activeDestIp || activeDestPort || activeMitre || activeSeverity || activeGlobalSearch) && (
+            {(activeSourceIp || activeDestIp || activeDestPort || activeMitre || activeSeverity || activeSearch) && (
               <button onClick={clearFilters}
                 className="px-2.5 py-1.5 rounded text-xs transition-all active:opacity-70"
                 style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", color: "#6b6e80" }}>
@@ -646,8 +628,8 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
               <input
                 ref={searchInputRef}
                 type="text"
-                value={globalSearch}
-                onChange={e => setGlobalSearch(e.target.value)}
+                value={search}
+                onChange={e => setSearch(e.target.value)}
                 onKeyDown={e => e.key === "Enter" && runSearch()}
                 placeholder="Search by IP, label… (press / to focus)"
                 className="flex-1 bg-transparent text-xs text-slate-200 placeholder-slate-600 focus:outline-none font-mono"
@@ -678,7 +660,7 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
               style={{ background: "rgba(6,182,212,0.15)", border: "1px solid rgba(6,182,212,0.35)", color: "#67e8f9" }}>
               Apply
             </button>
-            {(activeGlobalSearch || activeLabel || activeSeverity) && (
+            {(activeSearch || activeLabel || activeSeverity) && (
               <button onClick={clearFilters}
                 className="px-3 py-1.5 rounded text-xs transition-all active:opacity-70"
                 style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", color: "#6b6e80" }}>
@@ -866,7 +848,7 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
           dest_port: activeDestPort || undefined,
           mitre:     activeMitre || undefined,
           severity:  activeSeverity || undefined,
-          global_search: activeGlobalSearch || undefined,
+          search:    activeSearch || undefined,
         }}
       />
 
@@ -881,9 +863,9 @@ export function LogExplorer({ sessionId, onReviewSign, initialFilters }: LogExpl
           setPaletteOpen(false);
         }}
         onClear={() => {
-          setGlobalSearch(""); setLabel(""); setSeverity("");
-          setActiveGlobalSearch(""); setActiveLabel(""); setActiveSeverity("");
-          setOffset(0);
+          setSearch(""); setLabel(""); setSeverity("");
+          setActiveSearch(""); setActiveLabel(""); setActiveSeverity("");
+          setLocalSearch(""); setOffset(0);
           setPaletteOpen(false);
         }}
       />
@@ -1165,7 +1147,6 @@ function LogRow({
       dataset_type:    log.source_file,
       source_ip:       log.src_ip,
       dest_ip:         log.dst_ip,
-      src_port:        null,
       dest_port:       log.dst_port,
       protocol:        String(log.protocol ?? ""),
       label:           log.label,

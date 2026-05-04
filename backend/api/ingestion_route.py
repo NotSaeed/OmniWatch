@@ -950,7 +950,7 @@ async def get_pipeline_alerts(
     dest_ip:    str | None = Query(None),
     dest_port:  str | None = Query(None),
     label:      str | None = Query(None),
-    global_search: str | None = Query(None),
+    search:     str | None = Query(None),
     limit:      int        = Query(100, le=500),
     offset:     int        = Query(0),
 ):
@@ -993,9 +993,9 @@ async def get_pipeline_alerts(
     if label:
         filter_sql += " AND label LIKE ?"
         params.append(f"%{label}%")
-    if global_search:
+    if search:
         filter_sql += " AND (source_ip LIKE ? OR dest_ip LIKE ? OR label LIKE ? OR mitre_name LIKE ?)"
-        params += [f"%{global_search}%", f"%{global_search}%", f"%{global_search}%", f"%{global_search}%"]
+        params += [f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"]
 
     try:
         conn = sqlite3.connect(db, timeout=10.0)
@@ -1260,7 +1260,7 @@ async def analyze_pipeline_session(
     dest_ip:    str | None = Query(None),
     dest_port:  str | None = Query(None),
     label:      str | None = Query(None),
-    global_search: str | None = Query(None),
+    search:     str | None = Query(None),
 ):
     """Generate a Phi-3 AI analysis summary for a pipeline session."""
     db = get_db_path()
@@ -1289,9 +1289,9 @@ async def analyze_pipeline_session(
     if label:
         filter_sql += " AND label LIKE ?"
         params.append(f"%{label}%")
-    if global_search:
+    if search:
         filter_sql += " AND (source_ip LIKE ? OR dest_ip LIKE ? OR label LIKE ? OR mitre_name LIKE ?)"
-        params += [f"%{global_search}%", f"%{global_search}%", f"%{global_search}%", f"%{global_search}%"]
+        params += [f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"]
 
     try:
         conn = sqlite3.connect(db, timeout=10.0)

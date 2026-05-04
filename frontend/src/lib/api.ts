@@ -165,7 +165,7 @@ export const api = {
   getPipelineAlerts: (params?: {
     session_id?: string; severity?: string; mitre?: string;
     source_ip?: string; dest_ip?: string; dest_port?: string; label?: string;
-    global_search?: string; limit?: number; offset?: number;
+    search?: string; limit?: number; offset?: number;
   }) => http.get<{ data: PipelineAlert[]; total_filtered: number }>("/pipeline/alerts", { params }).then(r => r.data),
 
   getPipelineSessions: (limit = 50) =>
@@ -183,7 +183,7 @@ export const api = {
 
   analyzeSession: (sessionId: string, filters?: {
     severity?: string; mitre?: string; source_ip?: string; dest_ip?: string;
-    dest_port?: string; label?: string; global_search?: string;
+    dest_port?: string; label?: string; search?: string;
   }) =>
     http.post<{ report: string; ai_generated: boolean; session_id: string; alerts_analyzed: number }>(
       `/pipeline/analyze`, null, { params: { session_id: sessionId, ...filters } }
