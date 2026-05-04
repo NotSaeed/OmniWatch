@@ -1,21 +1,22 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 /* ── Reset ─────────────────────────────────────────────────────────────────── */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 /* ── Design Tokens ─────────────────────────────────────────────────────────── */
 :root {
-  /* Backgrounds — deep zinc/obsidian scale */
-  --splunk-bg:        #09090b;   /* zinc-950 */
-  --splunk-surface:   #111113;   /* near-black surface */
-  --splunk-card:      #18181b;   /* zinc-900 */
-  --splunk-border:    #27272a;   /* zinc-800 */
-  --splunk-border-hi: #3f3f46;   /* zinc-700 */
+  /* Backgrounds — deep midnight navy scale */
+  --splunk-bg:        #040910;   /* midnight navy-black */
+  --splunk-surface:   #070e1a;   /* deep navy surface */
+  --splunk-card:      #0b1421;   /* dark navy card */
+  --splunk-border:    #152130;   /* navy border */
+  --splunk-border-hi: #1e3248;   /* lighter navy accent border */
 
   /* Text */
-  --splunk-text:      #e4e4e7;   /* zinc-200 */
-  --splunk-muted:     #71717a;   /* zinc-500 */
+  --splunk-text:      #e2e8f0;   /* slate-200 */
+  --splunk-muted:     #64748b;   /* slate-500 */
 
   /* Accent palette */
   --splunk-green:     #72c811;
@@ -26,15 +27,36 @@
   --splunk-blue:      #3b82f6;   /* blue-500 */
   --splunk-violet:    #8b5cf6;   /* violet-500 */
 
+  /* Glow tokens — used by card and button variants */
+  --glow-cyan:        rgba(6, 182, 212, 0.15);
+  --glow-violet:      rgba(139, 92, 246, 0.12);
+  --glow-green:       rgba(114, 200, 17, 0.14);
+
   /* Sidebar */
-  --sidebar-bg:       #070709;
-  --sidebar-border:   #1c1c1f;
+  --sidebar-bg:       #03070d;   /* near-black navy sidebar */
+  --sidebar-border:   #0f1b28;   /* dark navy sidebar border */
+
+  /* ISA-101 HMI Severity — color is never the sole indicator (icon + label also used) */
+  --isa-critical:       #dc2626;   /* red-600 */
+  --isa-high:           #d97706;   /* amber-600 */
+  --isa-medium:         #ca8a04;   /* yellow-600 */
+  --isa-low:            #16a34a;   /* green-600 */
+  --isa-info:           #475569;   /* slate-600 */
+
+  /* Interaction feedback */
+  --focus-ring:         rgba(6, 182, 212, 0.40);
+  --row-selected-bg:    rgba(6, 182, 212, 0.06);
+  --row-hover-bg:       rgba(255, 255, 255, 0.025);
+
+  /* Slide-over */
+  --slideover-bg:       rgba(7, 14, 26, 0.97);
+  --slideover-border:   rgba(21, 33, 48, 0.90);
 }
 
 body {
   background: var(--splunk-bg);
   color: var(--splunk-text);
-  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Calibri, sans-serif;
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -45,6 +67,45 @@ body {
 /* ── Monospace ─────────────────────────────────────────────────────────────── */
 .font-mono, code, pre, kbd {
   font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+}
+
+/* ── Keyboard-navigable table rows ────────────────────────────────────────── */
+.row-kbd-focus {
+  outline: 1px solid rgba(6, 182, 212, 0.40);
+  outline-offset: -1px;
+  background: var(--row-selected-bg) !important;
+}
+
+/* ── Slide-over entrance (CSS fallback — framer-motion is primary) ─────────── */
+.slideover-enter {
+  animation: slide-from-right 220ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@keyframes slide-from-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* ── STARK proving pulse ───────────────────────────────────────────────────── */
+@keyframes proving-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(6, 182, 212, 0); }
+  50%       { box-shadow: 0 0 0 6px rgba(6, 182, 212, 0.25); }
+}
+.proving-pulse { animation: proving-pulse 1.4s ease-in-out infinite; }
+
+/* ── Command palette ───────────────────────────────────────────────────────── */
+.cmd-palette-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+}
+.cmd-palette-box {
+  position: fixed; top: 20%; left: 50%; transform: translateX(-50%);
+  z-index: 61; width: 520px; max-width: calc(100vw - 32px);
+  border-radius: 12px;
+  background: var(--splunk-card);
+  border: 1px solid var(--splunk-border-hi);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
 }
 
 /* ── Scrollbars (dense, Splunk-style) ─────────────────────────────────────── */
@@ -102,12 +163,12 @@ body {
 .splunk-panel-header {
   background: var(--splunk-surface);
   border-bottom: 1px solid var(--splunk-border);
-  padding: 8px 14px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.10em;
+  padding: 10px 16px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--splunk-muted);
+  color: var(--splunk-text);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -116,13 +177,23 @@ body {
 
 /* ── Glass card ────────────────────────────────────────────────────────────── */
 .glass-card {
-  background: rgba(255,255,255,0.03);
-  border: 1px solid rgba(255,255,255,0.06);
+  background: rgba(6, 18, 38, 0.55);
+  border: 1px solid rgba(30, 60, 100, 0.35);
   border-radius: 8px;
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(16px);
 }
 
-/* ── Glow button ───────────────────────────────────────────────────────────── */
+/* ── Interactive card — lift + glow on hover ───────────────────────────────── */
+.glow-card {
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.glow-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(6,182,212,0.10), 0 2px 8px rgba(0,0,0,0.40);
+  border-color: rgba(6,182,212,0.22) !important;
+}
+
+/* ── Glow buttons ──────────────────────────────────────────────────────────── */
 .btn-glow-green {
   background: rgba(114,200,17,0.10);
   border: 1px solid rgba(114,200,17,0.25);
@@ -132,7 +203,7 @@ body {
 .btn-glow-green:hover {
   background: rgba(114,200,17,0.18);
   border-color: rgba(114,200,17,0.45);
-  box-shadow: 0 0 16px rgba(114,200,17,0.20);
+  box-shadow: 0 0 18px rgba(114,200,17,0.22), 0 0 6px rgba(114,200,17,0.12);
 }
 
 .btn-glow-red {
@@ -144,7 +215,31 @@ body {
 .btn-glow-red:hover {
   background: rgba(239,68,68,0.16);
   border-color: rgba(239,68,68,0.45);
-  box-shadow: 0 0 18px rgba(239,68,68,0.22);
+  box-shadow: 0 0 18px rgba(239,68,68,0.22), 0 0 6px rgba(239,68,68,0.10);
+}
+
+.btn-glow-cyan {
+  background: rgba(6,182,212,0.08);
+  border: 1px solid rgba(6,182,212,0.22);
+  color: #67e8f9;
+  transition: all 0.15s;
+}
+.btn-glow-cyan:hover {
+  background: rgba(6,182,212,0.15);
+  border-color: rgba(6,182,212,0.45);
+  box-shadow: 0 0 18px rgba(6,182,212,0.20), 0 0 6px rgba(6,182,212,0.10);
+}
+
+.btn-glow-violet {
+  background: rgba(139,92,246,0.08);
+  border: 1px solid rgba(139,92,246,0.22);
+  color: #c4b5fd;
+  transition: all 0.15s;
+}
+.btn-glow-violet:hover {
+  background: rgba(139,92,246,0.16);
+  border-color: rgba(139,92,246,0.45);
+  box-shadow: 0 0 18px rgba(139,92,246,0.20), 0 0 6px rgba(139,92,246,0.10);
 }
 
 /* ── AI sparkle gradient ───────────────────────────────────────────────────── */
@@ -185,6 +280,7 @@ body {
   white-space: nowrap;
 }
 
+.splunk-table tr { transition: background 0.15s ease; }
 .splunk-table tr:hover td { background: rgba(255,255,255,0.025); }
 
 /* ── Severity badges ───────────────────────────────────────────────────────── */
@@ -222,3 +318,79 @@ body {
 }
 
 .hud-corner { animation: hud-pulse 3.5s ease-in-out infinite; }
+
+/* ── Page transitions ──────────────────────────────────────────────────────── */
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes page-exit {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+.page-enter { animation: page-enter 0.18s cubic-bezier(0.22,1,0.36,1) both; }
+
+/* ── Nav active indicator ──────────────────────────────────────────────────── */
+@keyframes nav-pip {
+  from { transform: scaleY(0); opacity: 0; }
+  to   { transform: scaleY(1); opacity: 1; }
+}
+.nav-pip { animation: nav-pip 0.15s cubic-bezier(0.22,1,0.36,1) both; transform-origin: top; }
+
+/* ── Glowing node (Trust Chain verified state) ─────────────────────────────── */
+@keyframes node-glow {
+  0%, 100% { box-shadow: 0 0 6px  rgba(114,200,17,0.30), 0 0 12px rgba(114,200,17,0.12); }
+  50%       { box-shadow: 0 0 14px rgba(114,200,17,0.55), 0 0 28px rgba(114,200,17,0.25); }
+}
+@keyframes node-glow-cyan {
+  0%, 100% { box-shadow: 0 0 6px  rgba(6,182,212,0.30), 0 0 12px rgba(6,182,212,0.12); }
+  50%       { box-shadow: 0 0 14px rgba(6,182,212,0.55), 0 0 28px rgba(6,182,212,0.25); }
+}
+@keyframes node-glow-violet {
+  0%, 100% { box-shadow: 0 0 6px  rgba(139,92,246,0.30), 0 0 12px rgba(139,92,246,0.12); }
+  50%       { box-shadow: 0 0 14px rgba(139,92,246,0.55), 0 0 28px rgba(139,92,246,0.25); }
+}
+.glow-verified { animation: node-glow       2.4s ease-in-out infinite; }
+.glow-cyan     { animation: node-glow-cyan  2.4s ease-in-out infinite; }
+.glow-violet   { animation: node-glow-violet 2.4s ease-in-out infinite; }
+
+/* ── Ambient navy background radial glow ───────────────────────────────────── */
+.ambient-glow-bg {
+  position: relative;
+}
+.ambient-glow-bg::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 60% 40% at 50% 0%, rgba(6,182,212,0.05) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ── Sidebar accent strip at top ──────────────────────────────────────────── */
+.sidebar-glow-strip {
+  background: linear-gradient(90deg, rgba(217,70,239,0.18) 0%, rgba(6,182,212,0.18) 100%);
+  height: 1px;
+  width: 100%;
+}
+
+/* ── Floating border-glow animation for featured cards ─────────────────────── */
+@keyframes border-glow-cycle {
+  0%, 100% { border-color: rgba(6,182,212,0.15); box-shadow: 0 0 0 transparent; }
+  50%       { border-color: rgba(6,182,212,0.40); box-shadow: 0 0 20px rgba(6,182,212,0.08); }
+}
+.border-glow-cycle {
+  animation: border-glow-cycle 4s ease-in-out infinite;
+}
+
+/* ── Global interactive transitions ───────────────────────────────────────── */
+button, [role="button"] {
+  transition: background 0.2s ease-in-out, color 0.2s ease-in-out,
+              border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out,
+              opacity 0.2s ease-in-out;
+}
+
+/* Sidebar collapse/expand */
+aside {
+  transition: width 0.2s ease-in-out;
+}

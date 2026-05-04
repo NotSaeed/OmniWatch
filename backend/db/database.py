@@ -56,6 +56,10 @@ async def _migrate(conn) -> None:
         "ALTER TABLE firewall_status ADD COLUMN verdict_json TEXT",
         "ALTER TABLE firewall_status ADD COLUMN edge_record_id INTEGER",
         "ALTER TABLE firewall_status ADD COLUMN auto_blocked INTEGER DEFAULT 0",
+        # Phase 2 — full network context on AI-triage alerts
+        "ALTER TABLE alerts ADD COLUMN dest_ip TEXT",
+        "ALTER TABLE alerts ADD COLUMN dest_port INTEGER",
+        "ALTER TABLE alerts ADD COLUMN chain_hash TEXT",
     ]
     for sql in migrations:
         try:

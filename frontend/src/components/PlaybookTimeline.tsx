@@ -99,24 +99,6 @@ function IconKey() {
     </svg>
   );
 }
-function IconBell() {
-  return (
-    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
-         strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-    </svg>
-  );
-}
-function IconEye() {
-  return (
-    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
-         strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-      <circle cx="12" cy="12" r="3" />
-    </svg>
-  );
-}
 function IconScissors() {
   return (
     <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
@@ -143,25 +125,6 @@ function IconHash() {
          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="4" y1="9" x2="20" y2="9" /><line x1="4" y1="15" x2="20" y2="15" />
       <line x1="10" y1="3" x2="8" y2="21" /><line x1="16" y1="3" x2="14" y2="21" />
-    </svg>
-  );
-}
-function IconFile() {
-  return (
-    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
-         strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-      <polyline points="14 2 14 8 20 8" />
-      <line x1="8" y1="13" x2="16" y2="13" /><line x1="8" y1="17" x2="12" y2="17" />
-    </svg>
-  );
-}
-function IconStop() {
-  return (
-    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
-         strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10" />
-      <rect x="9" y="9" width="6" height="6" />
     </svg>
   );
 }

@@ -99,9 +99,10 @@ export const api = {
   getActionedIps: () =>
     http.get<string[]>("/cicids/actioned-ips").then(r => r.data),
 
-  getHourlyDistribution: () =>
-    http.get<Array<{ hour: number; total: number; threats: number; benign: number }>>(
-      "/stats/hourly-distribution"
+  getHourlyDistribution: (window: "1h" | "24h" | "7d" | "all" = "24h", sessionId?: string | null) =>
+    http.get<Array<{ bucket: string; total: number; threats: number; medium: number; benign: number }>>(
+      "/stats/hourly-distribution",
+      { params: { window, ...(sessionId ? { session_id: sessionId } : {}) } },
     ).then(r => r.data),
 
   getConfigStatus: () =>
@@ -163,15 +164,49 @@ export const api = {
 
   getPipelineAlerts: (params?: {
     session_id?: string; severity?: string; mitre?: string;
-    search?: string; limit?: number; offset?: number;
-  }) => http.get<PipelineAlert[]>("/pipeline/alerts", { params }).then(r => r.data),
+    source_ip?: string; dest_ip?: string; dest_port?: string; label?: string;
+    global_search?: string; limit?: number; offset?: number;
+  }) => http.get<{ data: PipelineAlert[]; total_filtered: number }>("/pipeline/alerts", { params }).then(r => r.data),
 
-  getPipelineSessions: (limit = 20) =>
+  getPipelineSessions: (limit = 50) =>
     http.get<PipelineSession[]>("/pipeline/sessions", { params: { limit } }).then(r => r.data),
+
+  deleteSession: (sessionId: string) =>
+    http.delete<{ status: string; session_id: string; rows_deleted: number }>(
+      `/sessions/${sessionId}`,
+    ).then(r => r.data),
+
+  getTopIps: (sessionId: string, limit = 10) =>
+    http.get<{ ip: string; count: number; dominant_rule?: string }[]>("/pipeline/top-ips", {
+      params: { session_id: sessionId, limit },
+    }).then(r => r.data),
+
+  analyzeSession: (sessionId: string, filters?: {
+    severity?: string; mitre?: string; source_ip?: string; dest_ip?: string;
+    dest_port?: string; label?: string; global_search?: string;
+  }) =>
+    http.post<{ report: string; ai_generated: boolean; session_id: string; alerts_analyzed: number }>(
+      `/pipeline/analyze`, null, { params: { session_id: sessionId, ...filters } }
+    ).then(r => r.data),
+
+  getMitreStats: (sessionId: string) =>
+    http.get<{ technique_id: string; name: string; count: number }[]>(
+      "/pipeline/mitre-stats",
+      { params: { session_id: sessionId } },
+    ).then(r => r.data),
+
+  getSessionSoarFeed: (sessionId: string, limit = 50) =>
+    http.get<import("./types").CicidsPlaybookLog[]>(
+      "/pipeline/soar-feed",
+      { params: { session_id: sessionId, limit } },
+    ).then(r => r.data),
 
   // ── Trust Chain / Sprint 5 ──────────────────────────────────────────────
   generateStarkProof: (recordId: number) =>
     http.post<{ success: boolean; receipt_b64: string }>(`/edge/prove/${recordId}`).then(r => r.data),
+
+  provePipelineAlert: (alertId: number) =>
+    http.post<{ success: boolean; receipt_b64: string }>(`/pipeline/prove/${alertId}`).then(r => r.data),
 
   fido2SignBegin: (receiptB64: string, mockFido2 = true) =>
     http.post<{ session_id: string; options: any; mock_fido2?: boolean }>(

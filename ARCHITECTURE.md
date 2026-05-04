@@ -268,10 +268,10 @@ DDSketch is a mergeable, memory-bounded quantile sketch with **guaranteed relati
 γ = (1 + α) / (1 − α)
 ```
 
-For α = 1% (the platform default):
+For α = 0.5% (the platform default):
 
 ```
-γ = 1.01 / 0.99 ≈ 1.0204
+γ = 1.005 / 0.995 ≈ 1.01005
 ```
 
 **Bucket index** for an observed value `x > 0`:
@@ -288,8 +288,8 @@ The sketch stores only the count per bucket index, giving O(log(max/min) / log(�
 
 ```python
 class DDSketchBaseliner:
-    ALPHA = 0.01
-    GAMMA = (1 + ALPHA) / (1 - ALPHA)   # ≈ 1.0204
+    ALPHA = 0.005
+    GAMMA = (1 + ALPHA) / (1 - ALPHA)   # ≈ 1.01005
 
     def add(self, bytes_s: float):
         if bytes_s > 0:
@@ -323,7 +323,7 @@ The Q14 multiplication `bytes_per_sec × 16384` is exact because `bytes_per_sec`
 
 ### 7.4 Error Bound
 
-The p99 estimate has multiplicative relative error ≤ α = 1%. For a true p99 of 200 KB/s, the threshold is in the interval [198 KB/s, 202 KB/s]. This is acceptable for volumetric anomaly detection — byte-rate outliers are typically 5–50× the baseline, far exceeding the 1% error margin.
+The p99 estimate has multiplicative relative error ≤ α = 0.5%. For a true p99 of 200 KB/s, the threshold is in the interval [199 KB/s, 201 KB/s]. Tightened from 1% to halve the false-positive band on high-bandwidth IoT telemetry; bucket count increases by ~10%.
 
 ---
 
@@ -665,21 +665,21 @@ Step 2 ensures the STARK proof commits to the exact input that was evaluated. A 
 #### 10.4.1 Z-Score Rule (integer, guest-side)
 
 ```rust
-fn zscore_exceeds_3(value: u64, mean: u64, stddev: u64) -> bool {
+fn zscore_scaled(value: u64, mean: u64, stddev: u64) -> u64 {
     // All values are ×1000 (milli-scale), so units cancel.
-    if stddev == 0 { return false; }
+    // Returns |Z| × 1000 to maintain integer precision.
+    if stddev == 0 { return 0; }
     let diff = if value > mean { value - mean } else { mean - value };
-    // Cross-multiply instead of dividing to maintain precision and avoid zero-division
-    diff.saturating_mul(1000) > stddev.saturating_mul(3000)
+    diff * 1000 / stddev  // ×1000 for 3 decimal places
 }
 
-let z_b_exceeds = zscore_exceeds_3(
+let z_bytes = zscore_scaled(
     telemetry.flow_bytes_s_milli,
     baselines.mean_bytes_s_milli,
     baselines.stddev_bytes_s_milli,
 );
-
-if z_b_exceeds || z_p_exceeds {
+// 3.0 × 1000 = 3000
+if z_bytes > 3_000 || z_pkts > 3_000 {
     triggered |= rules::ZSCORE_ANOMALY;
 }
 ```
@@ -799,15 +799,52 @@ Together they form a **three-layer audit trail**: the analyst's signature ties a
 
 ### 12.2 Chunked Processing
 
-All CSV datasets are processed in configurable chunks (default: 65 536 rows) to bound peak memory. Per chunk:
+Large CSV datasets are processed through a **two-phase Polars streaming pipeline** that eliminates OOM risk on multi-million-row files (e.g., CIC-IDS-2017 at 2.1 M rows).
 
-1. **`normalize_chunk(df)`** — deduplicates column headers (`df.loc[:, ~df.columns.duplicated(keep="first")]`), coerces types, drops empty rows.
-2. **`_col1(df, col)`** — defensively extracts a single Series from any column reference, guarding against 2D DataFrame returns caused by duplicate headers surviving earlier stages.
-3. **Z-score filter** — `zscore_baseline_filter(df)` flags rows where |Z| > 3 on bytes/s or packet count.
-4. **Isolation Forest** — `ForestBaseliner.accumulate(df)` adds the chunk to the training buffer.
-5. **DDSketch** — `DDSketchBaseliner.add(value)` for each flow's bytes/s.
+**Phase A — `scan_csv().sink_parquet()` (Polars streaming engine)**
 
-After all chunks: `ForestBaseliner.fit()` trains the ensemble, `DDSketchBaseliner.threshold_fp14()` computes the STARK-compatible threshold.
+```python
+pl.scan_csv(
+    str(csv_path),
+    infer_schema_length=0,       # all columns as Utf8
+    ignore_errors=True,
+    encoding="utf8-lossy",
+    truncate_ragged_lines=True,
+).sink_parquet(str(parquet_path), compression="lz4")
+```
+
+Polars' LazyFrame streaming engine converts CSV → columnar Parquet using a bounded internal batch (peak RAM ≈ 50–200 MB regardless of file size). The full dataset is never materialized in Arrow memory. The CSV is deleted immediately after Phase A completes to reclaim drive space.
+
+**Phase B — `read_csv_batched(batch_size=10 000)`**
+
+```python
+pl.scan_parquet(str(parquet_path))
+  .slice(offset, 10_000)
+  .collect()
+  .to_pandas()
+  .astype(object)   # normalize StringDtype → object/NaN — same as pandas read_csv(dtype=str)
+```
+
+Each 10 K-row chunk is read via columnar row-group seeking (O(1) disk seek). Only 10 K rows reside in RAM at a time. Chunk size reduced from 100 K to improve frontend progress granularity (~200–400 ms updates instead of 3-second jumps). `.astype(object)` normalizes Polars `StringDtype` columns to object dtype, ensuring downstream `_safe_str` / `pd.isna()` calls behave identically to the pandas fallback path.
+
+**Fallback — pandas chunked reader**
+
+If Polars is unavailable (`ImportError`) or `sink_parquet` fails, the pipeline falls back to `pd.read_csv(chunksize=10_000, memory_map=True)`.
+
+**Upload staging**
+
+Uploads are written to `D:/OmniWatch_Uploads` (never the OS system partition `C:`) to prevent filling the boot drive during large ingest sessions. `_run_pipeline`'s `finally` block provides a last-resort cleanup sweep for both CSV and Parquet files.
+
+**Per-chunk pipeline steps:**
+
+1. **`normalize_chunk(df)`** — deduplicates column headers, applies schema-specific column rename map (see `_SCHEMA_MAPS`), fills missing canonical columns (including `source_port`) with `None`.
+2. **`time_window_correlate(df)`** — per-source-IP rolling connection count over a 1-minute window using `numpy.searchsorted` (O(n log n)); sets `tw_suspicious=True` for IPs exceeding 30 connections/min.
+3. **`run_tier1_combined(df)`** — heuristic label filter ∪ LODA scoring ∪ Z-score filter; returns the union of flagged rows with vectorized `str.contains()` severity assignment.
+4. **`tier2_enrich(flagged)`** — MITRE ATT&CK technique derivation; column-list extraction (no `iterrows()`); emits `source_port` alongside the standard 5-tuple.
+5. **`build_chain()`** — SHA-256 batch receipt chaining (§11).
+6. **`insert_alerts_batch()`** — WAL-mode SQLite write with lock-retry decorator and `mmap_size=512 MB`.
+
+After all chunks: `DDSketchBaseliner.threshold_fp14()` computes the STARK-compatible volumetric threshold; `LodaBaseliner.fit()` trains the LODA projection model.
 
 ### 12.3 Session Architecture
 
@@ -821,28 +858,40 @@ Every upload generates a UUID `session_id`. All `telemetry_alerts` rows carry th
 
 ```sql
 CREATE TABLE IF NOT EXISTS telemetry_alerts (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id  TEXT,
-    ingested_at TEXT,
-    src_ip      TEXT,
-    dst_ip      TEXT,
-    dst_port    INTEGER,
-    protocol    TEXT,
-    label       TEXT,
-    severity    TEXT,
-    category    TEXT,
-    mitre_id    TEXT,
-    mitre_name  TEXT,
-    confidence  REAL,
-    bytes_total REAL,        -- added by migration
-    z_score_bytes REAL,      -- added by migration
-    z_score_pkts  REAL,      -- added by migration
-    raw_features  TEXT,      -- added by migration (JSON)
-    chain_hash    TEXT,      -- added by migration
-    dataset_type  TEXT,
-    source_file   TEXT
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT    NOT NULL,
+    ingested_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    dataset_type    TEXT    NOT NULL,
+    source_ip       TEXT,
+    src_port        INTEGER,          -- source port (Phase 2 addition)
+    dest_ip         TEXT,
+    dest_port       INTEGER,
+    protocol        TEXT,
+    label           TEXT,
+    severity        TEXT    NOT NULL DEFAULT 'HIGH',
+    mitre_technique TEXT,
+    mitre_name      TEXT,
+    bytes_total     REAL,
+    z_score_bytes   REAL,
+    z_score_pkts    REAL,
+    raw_features    TEXT,             -- JSON snapshot of canonical fields (≤512 chars)
+    chain_hash      TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_ta_session   ON telemetry_alerts(session_id);
+CREATE INDEX IF NOT EXISTS idx_ta_severity  ON telemetry_alerts(severity);
+CREATE INDEX IF NOT EXISTS idx_ta_src       ON telemetry_alerts(source_ip);
+CREATE INDEX IF NOT EXISTS idx_ta_mitre     ON telemetry_alerts(mitre_technique);
 ```
+
+`src_port` is extracted from `_SCHEMA_MAPS` for all supported schemas:
+
+| Schema | Source column |
+|---|---|
+| CIC-IDS-2017 | `"source port"` |
+| BOTSv3 | `"src_port"` / `"sport"` |
+| Zeek | `"id.orig_p"` |
+| Generic | `"src_port"` / `"source_port"` / `"sport"` / `"sp"` |
 
 Migrations use the pattern:
 
@@ -854,6 +903,8 @@ for stmt in ALTER_STATEMENTS:
         if "duplicate column" not in str(exc).lower():
             raise  # re-raise unexpected errors
 ```
+
+The `raw_features` column stores a ≤512-character JSON snapshot of the canonical fields (`source_ip`, `source_port`, `dest_ip`, `dest_port`, `protocol`, `bytes_out`, `bytes_in`, `packets`, `timestamp`, `flow_duration`) captured at `tier2_enrich` time. This snapshot is displayed in the Log Explorer expanded row detail panel and passed to the AI incident analyst as source grounding.
 
 ---
 
@@ -975,21 +1026,72 @@ The WebAssembly module (`risc0-zkvm`) is instantiated in a dedicated background 
 
 ### 15.2 Spatial WebGL Trust Chain DAG
 
-The verification state is visualized in Three.js as a 3D Directed Acyclic Graph (DAG) mapping the cryptographic trust chain:
+The verification state is visualized in React Three Fiber as a 3D Directed Acyclic Graph (DAG) mapping the cryptographic trust chain:
 
 ```
 Raw Telemetry → SHA-256 input_hash → STARK Receipt → FIDO2 ECDSA → Remediation
 ```
 
-Each node solidifies from a pending grey state to a verified green state as each phase completes. Upon full dual-validation the DAG emits a particle effect signaling readiness for remediation authorization.
+Each node solidifies from a pending grey state to a verified green state as each phase completes. Upon full dual-validation the DAG emits a 24-particle radial burst (Fibonacci lattice distribution, 2.2 s duration) signaling readiness for remediation authorization.
+
+**Scene composition:**
+
+- **StarField** — 280 navy-blue micro-points (`color: #1e3a5f`, size 0.035) scattered across a 55×24 unit volume pushed 10 units behind the node plane, providing depth parallax as the camera auto-rotates.
+- **Node geometry** — `dodecahedronGeometry` (radius 0.32) with `meshStandardMaterial`; `emissiveIntensity` ranges from 0.06 (pending) to 1.10 (verified) for visible glow differentiation.
+- **Double-layer node glow** — verified nodes render an inner tight sphere (radius 0.40, opacity 0.22) inside the standard outer glow sphere (radius 0.62, opacity ≤0.22 animated), giving a two-layer bloom without post-processing.
+- **Edge rendering** — `QuadraticBezierCurve3` with an upward midpoint offset (+0.25 Y); green and 70% opacity for verified edges, dim grey (30% opacity) for pending edges.
+- **Dynamic lighting** — a `pointLight` interpolates color toward green (all verified), cyan (verifying), or red (failed) via `color.lerp(target, 0.04)` per frame. A secondary violet fill light (`[0, -5, 2]`, intensity 0.20) provides chromatic depth.
+- **OrbitControls** — `enableDamping` (factor 0.07) gives smooth inertial camera movement. `autoRotateSpeed = 0.5`.
 
 ### 15.3 Graceful Degradation
 
-If the WebGL context fails to initialize (common on remote desktops or GPU-less VMs), the React architecture degrades to a dense 2D CSS-grid matrix view preserving full alert functionality without any WebGL dependency.
+If the WebGL context fails to initialize (common on remote desktops or GPU-less VMs), the React architecture degrades to a dense 2D CSS-grid matrix view with staggered framer-motion entrance (0.07 s per-node stagger), preserving full alert functionality without any WebGL dependency.
 
 ### 15.4 Ecological Interface Design
 
-The interface follows Ecological Interface Design (EID) principles: information is encoded in the structure of the display, not in color alone. Severity levels use both color (red/amber/green) and iconographic shape (circle/triangle/square) to remain accessible under deuteranopia simulation.
+The interface follows Ecological Interface Design (EID) principles: information is encoded in the structure of the display, not in color alone. Severity levels use both color (red/amber/green) and iconographic shape to remain accessible under deuteranopia simulation.
+
+### 15.5 Deep Navy Color Palette
+
+Global CSS design tokens shifted from neutral zinc to **deep midnight navy** to match the cyber-physical / OT aesthetic:
+
+| Token | Old (zinc) | New (navy) |
+|---|---|---|
+| `--splunk-bg` | `#09090b` | `#040910` |
+| `--splunk-surface` | `#111113` | `#070e1a` |
+| `--splunk-card` | `#18181b` | `#0b1421` |
+| `--splunk-border` | `#27272a` | `#152130` |
+| `--sidebar-bg` | `#070709` | `#03070d` |
+
+New glow tokens (`--glow-cyan`, `--glow-violet`, `--glow-green`) provide consistent hover-tint values across button and card variants. New utility classes: `.glow-card` (hover lift `translateY(-2px)` + cyan box-shadow), `.btn-glow-cyan`, `.btn-glow-violet`, `.border-glow-cycle` (4 s animated border pulse), and `.sidebar-glow-strip` (1 px gradient accent line below the brand mark).
+
+### 15.6 framer-motion Navigation Micro-Interactions
+
+- **Logo mark** — `motion.div` with `whileHover={{ scale: 1.08 }}` and ambient `boxShadow` glow on the brand area.
+- **Nav items** — `motion.button` with `whileHover={{ x: 3 }}` (spring stiffness 420, damping 28) and `whileTap={{ scale: 0.97 }}`. Active items use a cyan tint (`rgba(6,182,212,0.08)`) instead of neutral white, plus a subtle inset ring.
+- **Active-page indicator pip** — shared `layoutId="nav-pip"` spring (stiffness 500, damping 30); animates to the new position instead of re-mounting.
+- **Page transitions** — `AnimatePresence mode="wait"` with `motion.div` `y: 8 → 0`, duration 0.16 s, cubic-bezier `[0.22, 1, 0.36, 1]`.
+- **Trust Chain info cards** — staggered `motion.div` entrance (`staggerChildren: 0.06 s`) on the Trust Chain page; each card animates from `y: 10, opacity: 0`.
+
+### 15.7 Log Explorer — Splunk-Tier Network Telemetry View
+
+The Log Explorer in pipeline session mode displays the full network **5-tuple** for every alert row:
+
+| Column | Source field |
+|---|---|
+| Src IP | `source_ip` |
+| Src Port | `src_port` |
+| Dst IP | `dest_ip` |
+| Dst Port | `dest_port` |
+| Protocol | `protocol` |
+
+**Row interaction model:**
+
+- Clicking any row toggles an inline Splunk-style expanded detail panel showing: alert fields (source grounding sent to the AI analyst), raw feature snapshot (JSON from `raw_features`), Z-score values, and chain hash.
+- The `▶` expand chevron in the `#` column rotates 90° on expansion.
+- Rows display a `3px` cyan left-border accent on hover (translucent) and solidify it when expanded.
+- The **Review & Sign** action button fades in only on row hover (`opacity-0 group-hover:opacity-100`), reducing visual clutter on dense tables.
+- The **Analyze with AI** button in the expanded panel maps the `PipelineAlert` to a `CicidsLog` and opens the per-row AI incident report slide-over.
 
 ---
 
@@ -1073,4 +1175,4 @@ let q0 = ((c_int as i64 * q1) >> 14) - q2 + x as i64;
 
 ---
 
-*Document last updated: 2026-04-25 — reflects verifier/core v5 (CUSUM upgrade, superseding Goertzel) and analysis_engine.py CusumBaseliner.*
+*Document last updated: 2026-04-28 — reflects: (1) Polars two-phase streaming ingestion pipeline (`scan_csv → sink_parquet → slice`), D:/OmniWatch_Uploads staging, pandas fallback path; (2) `src_port` column added to `telemetry_alerts` with full schema-map coverage across CIC-IDS-2017, BOTSv3, Zeek, and generic; (3) Log Explorer 5-tuple display, inline expand row, `▶` chevron, group-hover actions; (4) deep navy color palette, framer-motion nav micro-interactions, StarField 3D scene background, OrbitControls damping.*

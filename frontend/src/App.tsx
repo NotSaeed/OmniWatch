@@ -1,12 +1,12 @@
 import { Component } from "react";
 import type { ErrorInfo, ReactNode } from "react";
 import { useState, useCallback, useEffect, useRef } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Toaster, toast } from "sonner";
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid,
-  Cell, ComposedChart, Legend, Line, Pie, PieChart,
-  ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Area, Bar, BarChart, Brush, CartesianGrid, Cell, ComposedChart,
+  ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { useMemo } from "react";
 import {
@@ -17,26 +17,28 @@ import {
 } from "lucide-react";
 
 import { api } from "./lib/api";
-import type { Alert, CicidsPlaybookLog, CicidsStats, CisoPipelineSummary, DashboardStats, PipelineAlert, PipelineCompletion, PipelineWsMessage, WsMessage } from "./lib/types";
+import type { Alert, CicidsPlaybookLog, CicidsStats, CisoPipelineSummary, DashboardStats, PipelineAlert, PipelineCompletion, PipelineSession, PipelineWsMessage, WsMessage } from "./lib/types";
 import { useWebSocket } from "./hooks/useWebSocket";
 
 
-import { StatsBar }                from "./components/StatsBar";
-import { SeverityChart }           from "./components/SeverityChart";
 import { MitreHeatmap }            from "./components/MitreHeatmap";
-import { KillChainNarrativePanel } from "./components/KillChainNarrativePanel";
 import { LogExplorer }             from "./components/LogExplorer";
-import { StatsCards }              from "./components/StatsCards";
+import type { LogFilters }         from "./components/LogExplorer";
+import { TopThreatSourcesPanel }   from "./components/TopThreatSourcesPanel";
+import { ExecutiveBriefDrawer }    from "./components/ExecutiveBriefDrawer";
 import { SOARActivity }            from "./components/SOARActivity";
 import { PlaybookTimeline }        from "./components/PlaybookTimeline";
 import type { ActionOverride }     from "./components/PlaybookTimeline";
 import { SettingsPage }            from "./components/SettingsPage";
 import { TrustChainDAG }           from "./components/TrustChainDAG";
 import { EdgeTelemetryPanel }      from "./components/EdgeTelemetryPanel";
-import { Fido2Panel }              from "./components/Fido2Panel";
 import { FirewallHistoryPanel }    from "./components/FirewallHistoryPanel";
+import { RemediationPlanPanel }    from "./components/RemediationPlanPanel";
+import { SeverityChart }           from "./components/SeverityChart";
 import { TelemetryUploader }       from "./components/TelemetryUploader";
+import { AiIncidentReview }        from "./components/AiIncidentReview";
 import type { TrustNode, NodeState } from "./components/TrustChainDAG";
+import { ErrorBoundary }             from "./components/ErrorBoundary";
 
 type Page = "dashboard" | "logexplorer" | "playbooks" | "trustchain" | "settings";
 
@@ -102,6 +104,217 @@ const NAV_ITEMS: NavItem[] = [
   { page: "settings",    label: "Settings",          Icon: Settings2,       description: "API keys & configuration" },
 ];
 
+// ── Session switcher dropdown ─────────────────────────────────────────────────
+
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso.slice(0, 10);
+  const now  = new Date();
+  const diff = (now.getTime() - d.getTime()) / 1000;
+  if (diff < 60)        return "just now";
+  if (diff < 3600)      return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400)     return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 86400 * 2) return "yesterday";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function fmtNum(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(0)}k`;
+  return String(n);
+}
+
+function SessionSwitcherDropdown({
+  activeSessionId,
+  activeFileName,
+  onSwitch,
+  onDelete,
+}: {
+  activeSessionId: string | null;
+  activeFileName:  string | null;
+  onSwitch: (session: PipelineSession) => void;
+  onDelete: (sessionId: string) => void;
+}) {
+  const [open,       setOpen]       = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const { data: sessions, refetch } = useQuery({
+    queryKey:  ["pipeline-sessions-list"],
+    queryFn:   () => api.getPipelineSessions(50),
+    staleTime: 30_000,
+  });
+
+  const handleOpen = () => { setOpen(o => !o); refetch(); };
+
+  const STATUS_DOT: Record<string, string> = {
+    complete: "#22c55e",
+    running:  "#f59e0b",
+    pending:  "#4e9af1",
+    error:    "#e84d4d",
+  };
+
+  return (
+    <div ref={ref} className="relative">
+      {/* ── Trigger ── */}
+      <button
+        onClick={handleOpen}
+        className="flex items-center gap-1.5 px-2.5 py-1 rounded transition-colors"
+        style={{
+          background: open ? "rgba(78,154,241,0.14)" : "rgba(78,154,241,0.08)",
+          border:     "1px solid rgba(78,154,241,0.25)",
+        }}
+      >
+        <span className="w-1.5 h-1.5 rounded-full shrink-0"
+              style={{ background: activeSessionId ? "#4e9af1" : "#3d3f4a",
+                       boxShadow: activeSessionId ? "0 0 6px #4e9af180" : "none" }} />
+        <span className="text-[10px] font-medium" style={{ color: "#4e9af1" }}>
+          {activeFileName
+            ? <span className="font-mono font-semibold truncate max-w-[160px] inline-block align-bottom"
+                    style={{ color: "#c5c7d4" }}>{activeFileName}</span>
+            : <span style={{ color: "#4d5060" }}>No dataset</span>
+          }
+        </span>
+        <ChevronRight
+          className="w-3 h-3 shrink-0 transition-transform"
+          style={{ color: "#4e9af1", transform: open ? "rotate(90deg)" : "rotate(0deg)" }}
+        />
+      </button>
+
+      {/* ── Dropdown panel ── */}
+      {open && (
+        <div
+          className="absolute left-0 top-full mt-1 z-50 rounded-lg overflow-hidden"
+          style={{
+            width: 340,
+            background: "#0d0e14",
+            border: "1px solid #2e3038",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+          }}
+        >
+          <div className="flex items-center justify-between px-3 py-2"
+               style={{ borderBottom: "1px solid #1e1f26" }}>
+            <span className="text-[9px] uppercase tracking-widest font-semibold" style={{ color: "#4d5060" }}>
+              Saved Datasets
+            </span>
+            <span className="text-[9px] font-mono" style={{ color: "#3d3f4a" }}>
+              {sessions?.length ?? 0} session{sessions?.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+
+          <div className="overflow-y-auto" style={{ maxHeight: 320 }}>
+            {!sessions || sessions.length === 0 ? (
+              <div className="px-3 py-4 text-center text-[11px]" style={{ color: "#4d5060" }}>
+                No sessions found
+              </div>
+            ) : (
+              sessions.map(s => {
+                const isActive  = s.session_id === activeSessionId;
+                const isDeleting = s.session_id === deletingId;
+                return (
+                  <div
+                    key={s.session_id}
+                    className="flex items-center gap-2 px-3 py-2 cursor-pointer group"
+                    style={{
+                      borderBottom: "1px solid #1a1b22",
+                      background: isActive ? "rgba(78,154,241,0.06)" : "transparent",
+                    }}
+                    onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "rgba(255,255,255,0.02)"; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = isActive ? "rgba(78,154,241,0.06)" : "transparent"; }}
+                    onClick={() => { if (!isActive) { onSwitch(s); setOpen(false); } }}
+                  >
+                    {/* Status dot */}
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0"
+                          style={{ background: STATUS_DOT[s.status] ?? "#4d5060" }} />
+
+                    {/* Info */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] font-mono font-medium truncate"
+                              style={{ color: isActive ? "#c5c7d4" : "#9ba3b8" }}>
+                          {s.filename}
+                        </span>
+                        {isActive && (
+                          <span className="px-1 py-px rounded text-[8px] font-bold uppercase shrink-0"
+                                style={{ background: "rgba(78,154,241,0.18)", color: "#4e9af1" }}>
+                            ACTIVE
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-[9px] font-mono tabular-nums" style={{ color: "#4d5060" }}>
+                          {fmtNum(s.rows_processed)} rows
+                        </span>
+                        <span style={{ color: "#2e3038" }}>·</span>
+                        <span className="text-[9px] font-mono tabular-nums" style={{ color: "#4d5060" }}>
+                          {fmtNum(s.alerts_found)} alerts
+                        </span>
+                        <span style={{ color: "#2e3038" }}>·</span>
+                        <span className="text-[9px] font-mono" style={{ color: "#3d3f4a" }}>
+                          {fmtDate(s.started_at)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Delete button — confirm on second click */}
+                    <button
+                      className="shrink-0 w-5 h-5 flex items-center justify-center rounded transition-colors opacity-0 group-hover:opacity-100"
+                      style={{
+                        background: isDeleting ? "rgba(239,68,68,0.25)" : "rgba(239,68,68,0.08)",
+                        border:     `1px solid ${isDeleting ? "rgba(239,68,68,0.5)" : "rgba(239,68,68,0.2)"}`,
+                        color:      "#fca5a5",
+                        opacity:    isDeleting ? 1 : undefined,
+                      }}
+                      title={isDeleting ? "Confirm delete" : "Delete session"}
+                      onClick={e => {
+                        e.stopPropagation();
+                        if (isDeleting) {
+                          onDelete(s.session_id);
+                          setDeletingId(null);
+                        } else {
+                          setDeletingId(s.session_id);
+                          setTimeout(() => setDeletingId(null), 3000);
+                        }
+                      }}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Footer — Purge All */}
+          <div className="px-3 py-2 flex items-center justify-between"
+               style={{ borderTop: "1px solid #1e1f26" }}>
+            <span className="text-[9px] font-mono" style={{ color: "#3d3f4a" }}>
+              Click a session to switch · trash to remove
+            </span>
+            <button
+              className="text-[9px] font-mono px-2 py-0.5 rounded transition-colors"
+              style={{ color: "#6b6e80", background: "rgba(239,68,68,0.05)", border: "1px solid rgba(239,68,68,0.12)" }}
+              onClick={() => { setOpen(false); onDelete("__ALL__"); }}
+            >
+              Purge All
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -116,6 +329,8 @@ export default function App() {
 
   // ── Trust Chain & ABC State ────────────────────────────────────────────────
   const [isProvingRecordId, setIsProvingRecordId] = useState<number | null>(null);
+  // Per-alert slide-over (AiIncidentReview) — set when analyst presses Enter on a row
+  const [reviewAlert, setReviewAlert] = useState<import("./lib/types").PipelineAlert | null>(null);
   const [abcEnabled, setAbcEnabled] = useState(false);
   const { data: abcStatus } = useQuery({
     queryKey:        ["abc-status"],
@@ -128,12 +343,11 @@ export default function App() {
     refetchInterval: 5000,
   });
   const [dagNodes, setDagNodes] = useState<TrustNode[]>([
-    { id: "edge",    label: "Edge Telemetry",    sublabel: "Pi 4 · Zeek + ICSNPP",        state: "pending",  position: [-4, 1.5, 0] },
-    { id: "bincode", label: "Bincode Payload",   sublabel: "61-byte serialized struct",    state: "pending",  position: [-1.5, 1.5, 0] },
-    { id: "zkvm",    label: "STARK Proof",       sublabel: "RISC Zero zkVM (Machine)",     state: "pending",  position: [1.5, 1.5, 0] },
-    { id: "fido2",   label: "FIDO2 Signature",   sublabel: "ECDSA · WebAuthn (Human)",     state: "pending",  position: [1.5, -1, 0] },
-    { id: "gate",    label: "Verification Gate", sublabel: "Dual-factor: Machine + Human", state: "pending",  position: [4.5, 0.25, 0] },
-    { id: "action",  label: "Remediation",       sublabel: "Network isolation · Firewall",  state: "pending",  position: [7, 0.25, 0] },
+    { id: "edge",    label: "Edge Telemetry",    sublabel: "Pi 4 · Zeek + ICSNPP",        state: "pending",  position: [-4, 0.5, 0] },
+    { id: "bincode", label: "Bincode Payload",   sublabel: "61-byte serialized struct",    state: "pending",  position: [-1.5, 0.5, 0] },
+    { id: "zkvm",    label: "STARK Proof",       sublabel: "RISC Zero zkVM (Machine)",     state: "pending",  position: [1.5, 0.5, 0] },
+    { id: "gate",    label: "Verification Gate", sublabel: "ZK Machine Verification",      state: "pending",  position: [4.5, 0.5, 0] },
+    { id: "action",  label: "Remediation",       sublabel: "Network isolation · Firewall",  state: "pending",  position: [7, 0.5, 0] },
   ]);
 
   const updateNodeState = (id: string, state: NodeState) => {
@@ -149,6 +363,35 @@ export default function App() {
     ));
   }, [edgeStatusData?.records_received]);
 
+  // Selected pipeline alert for Remediation Bridge (Review & Sign → Trust Chain)
+  const [selectedAlert, setSelectedAlert] = useState<PipelineAlert | null>(null);
+
+  // Hydrate edge + zkvm DAG nodes when an alert is selected via Review & Sign
+  useEffect(() => {
+    if (!selectedAlert) return;
+    const ts = new Date(selectedAlert.ingested_at).toLocaleTimeString(undefined, {
+      hour: "2-digit", minute: "2-digit",
+    });
+    setDagNodes(prev => prev.map(n => {
+      if (n.id === "edge") {
+        return {
+          ...n,
+          sublabel: `${ts} · ${selectedAlert.mitre_technique ?? selectedAlert.mitre_name ?? "Unknown"} · ${selectedAlert.severity}`,
+          state: "verifying" as NodeState,
+        };
+      }
+      if (n.id === "zkvm") {
+        return {
+          ...n,
+          sublabel: selectedAlert.chain_hash
+            ? `${selectedAlert.chain_hash.substring(0, 8)}…`
+            : "Awaiting proof",
+        };
+      }
+      return n;
+    }));
+  }, [selectedAlert]);
+
   // Pipeline uploader modal
   const [showUploader,      setShowUploader]      = useState(false);
   const [pipelineWsMessage, setPipelineWsMessage] = useState<PipelineWsMessage | null>(null);
@@ -157,12 +400,48 @@ export default function App() {
   // Drives the Dashboard StatsCards and the TrustChain DAG hash display.
   const [pipelineCompletion, setPipelineCompletion] = useState<PipelineCompletion | null>(null);
 
-  // Active session context — drives session-scoped data fetching across views.
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [activeFileName,  setActiveFileName]  = useState<string | null>(null);
+  // Recover pipelineCompletion from the API on mount if a session_id was
+  // stored in localStorage but the WebSocket completion message was missed
+  // (e.g. the user reloaded the page after the pipeline finished).
+  useEffect(() => {
+    const storedId = localStorage.getItem("ow_session_id");
+    if (!storedId) return;
+    api.getPipelineSession(storedId)
+      .then(session => {
+        if (session.status === "complete" && session.ciso_summary && session.chain_tip_hash) {
+          setPipelineCompletion({
+            session_id:     session.session_id,
+            filename:       session.filename,
+            chain_tip_hash: session.chain_tip_hash,
+            ciso_summary:   session.ciso_summary,
+            rows_processed: session.rows_processed,
+            alerts_found:   session.alerts_found,
+          });
+        }
+      })
+      .catch(() => {
+        // Stored session no longer exists — clear stale localStorage keys
+        localStorage.removeItem("ow_session_id");
+        localStorage.removeItem("ow_session_file");
+        setActiveSessionId(null);
+        setActiveFileName(null);
+      });
+  }, []); // run once on mount only
+
+  // Active session context — persisted in localStorage so a page reload restores
+  // the session-scoped Log Explorer and CISO stats without re-uploading.
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(
+    () => localStorage.getItem("ow_session_id"),
+  );
+  const [activeFileName, setActiveFileName] = useState<string | null>(
+    () => localStorage.getItem("ow_session_file"),
+  );
+
+  // Deep-link filters: set by dashboard panels → consumed by LogExplorer on next render.
+  const [logFilters, setLogFilters] = useState<LogFilters | null>(null);
 
   // Selected pipeline alert for Remediation Bridge (Review & Sign → Trust Chain)
-  const [selectedAlert, setSelectedAlert] = useState<PipelineAlert | null>(null);
+  // Moved up
 
   // Clear-data two-step confirm
   const [confirmClear,   setConfirmClear]   = useState(false);
@@ -291,9 +570,9 @@ export default function App() {
         n.id === "zkvm" ? { ...n, state: "verifying" } :
         n.id === "gate" || n.id === "action" ? { ...n, state: "pending" } : n,
       ));
-      toast.loading(
+      toast.info(
         `ABC: Generating STARK proof for ${msg.data.src_ip} (#${msg.data.record_id})…`,
-        { duration: 15000 },
+        { duration: 3000 },
       );
     }
     if (msg.type === "abc_auto_block") {
@@ -304,7 +583,7 @@ export default function App() {
       qc.invalidateQueries({ queryKey: ["firewall-status"] });
       toast.success(
         `ABC: Auto-blocked ${msg.data.src_ip} — Modbus FC${msg.data.fc} (${msg.data.confidence_pct}% conf.)`,
-        { duration: 8000, style: { background: "#052516", border: "1px solid #06b6d4" } },
+        { duration: 3000, style: { background: "#052516", border: "1px solid #06b6d4" } },
       );
     }
     if (msg.type === "cti_enrichment_started") {
@@ -352,7 +631,86 @@ export default function App() {
 
   // ── Actions ────────────────────────────────────────────────────────────────
 
-  // Two-step database clear
+  // Deep-link from a dashboard panel into the Log Explorer with pre-filled filters.
+  const navigateToLogExplorer = useCallback((filters: LogFilters) => {
+    setLogFilters(filters);
+    setActivePage("logexplorer");
+  }, []);
+
+  // Switch the active session — fetch full session details so pipelineCompletion is populated.
+  const handleSwitchSession = useCallback(async (session: PipelineSession) => {
+    setActiveSessionId(session.session_id);
+    setActiveFileName(session.filename);
+    localStorage.setItem("ow_session_id",   session.session_id);
+    localStorage.setItem("ow_session_file", session.filename);
+    // Bust all session-scoped queries so they refetch with the new session_id
+    qc.invalidateQueries({ queryKey: ["cicids-stats"] });
+    qc.invalidateQueries({ queryKey: ["hourly-distribution"] });
+    qc.invalidateQueries({ queryKey: ["pipeline-alerts"] });
+    qc.invalidateQueries({ queryKey: ["mitre-stats"] });
+    qc.invalidateQueries({ queryKey: ["session-soar-feed"] });
+    qc.invalidateQueries({ queryKey: ["pipeline-top-ips"] });
+    // Fetch full session to restore pipelineCompletion (ciso_summary + chain hashes)
+    try {
+      const full = await api.getPipelineSession(session.session_id);
+      if (full.status === "complete" && full.ciso_summary) {
+        setPipelineCompletion({
+          session_id:     full.session_id,
+          filename:       full.filename,
+          chain_tip_hash: full.chain_tip_hash ?? "",
+          ciso_summary:   full.ciso_summary,
+          rows_processed: full.rows_processed,
+          alerts_found:   full.alerts_found,
+        });
+      } else {
+        setPipelineCompletion(null);
+      }
+    } catch {
+      setPipelineCompletion(null);
+    }
+  }, [qc]);
+
+  // Delete one session (or __ALL__ sentinel for full purge).
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    const isPurgeAll = sessionId === "__ALL__";
+    const tid = toast.loading(isPurgeAll ? "Purging all data…" : "Deleting session…");
+    try {
+      let deleted = 0;
+      if (isPurgeAll) {
+        const r = await api.resetSystem();
+        deleted = r.rows_deleted;
+        qc.clear();
+        setAlerts([]);
+        setSoarEntries([]);
+        setLastScanId(null);
+      } else {
+        const r = await api.deleteSession(sessionId);
+        deleted = r.rows_deleted;
+        qc.invalidateQueries({ queryKey: ["pipeline-sessions-list"] });
+      }
+      // Clear active state if the deleted session was the active one (or purge all)
+      if (isPurgeAll || sessionId === activeSessionId) {
+        localStorage.removeItem("ow_session_id");
+        localStorage.removeItem("ow_session_file");
+        setActiveSessionId(null);
+        setActiveFileName(null);
+        setPipelineCompletion(null);
+        qc.invalidateQueries({ queryKey: ["cicids-stats"] });
+        qc.invalidateQueries({ queryKey: ["hourly-distribution"] });
+        qc.invalidateQueries({ queryKey: ["pipeline-alerts"] });
+      }
+      toast.success(
+        isPurgeAll
+          ? `All data purged — ${deleted.toLocaleString()} rows removed`
+          : `Session deleted — ${deleted.toLocaleString()} rows removed`,
+        { id: tid, duration: 5000 },
+      );
+    } catch {
+      toast.error("Delete failed — check backend connection", { id: tid });
+    }
+  }, [qc, activeSessionId]);
+
+  // Two-step confirm — clears active session (or purges all if no session active)
   async function handleClearData() {
     if (!confirmClear) {
       setConfirmClear(true);
@@ -362,42 +720,31 @@ export default function App() {
     if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
     setConfirmClear(false);
     setClearing(true);
-    const tid = toast.loading("Clearing all data from database…");
     try {
-      const result = await api.resetSystem();
-      // Bust every cached query so all widgets go back to empty state
-      qc.clear();
-      setAlerts([]);
-      setSoarEntries([]);
-      setLastScanId(null);
-      toast.success(`Database cleared — ${result.rows_deleted.toLocaleString()} rows removed`, {
-        id: tid,
-        description: "Upload a new CSV to start fresh",
-        duration: 6000,
-      });
-    } catch {
-      toast.error("Clear failed — check backend connection", { id: tid });
+      await handleDeleteSession(activeSessionId ?? "__ALL__");
     } finally {
       setClearing(false);
     }
   }
 
   // Orchestrator for full Trust Chain Verification
-  async function handleProve(recordId: number, modbusLabel: string, srcIp: string) {
+  async function handleProve(recordId: number, modbusLabel: string, srcIp: string, isPipeline = false) {
     setIsProvingRecordId(recordId);
     setActivePage("trustchain");
-    
+
     // Reset nodes 3-6 to verify fresh request
-    setDagNodes(prev => prev.map(n => 
+    setDagNodes(prev => prev.map(n =>
       ["zkvm", "fido2", "gate", "action"].includes(n.id) ? { ...n, state: "pending" } : n
     ));
-    
+
     updateNodeState("zkvm", "verifying");
     const tid = toast.loading(`Generating Zero-Knowledge STARK Proof for ${modbusLabel}… (takes ~8s)`);
-    
+
     try {
-      // 1. Generate STARK Proof
-      const res = await api.generateStarkProof(recordId);
+      // 1. Generate STARK Proof — route based on alert source table
+      const res = isPipeline
+        ? await api.provePipelineAlert(recordId)
+        : await api.generateStarkProof(recordId);
       const receiptB64 = res.receipt_b64;
       updateNodeState("zkvm", "verified");
       toast.success("STARK Proof generated successfully!", { id: tid });
@@ -468,89 +815,147 @@ export default function App() {
     <div className="flex min-h-screen" style={{ background: "var(--splunk-bg)", color: "var(--splunk-text)" }}>
       <Toaster
         theme="dark"
-        position="top-right"
+        position="bottom-right"
         closeButton
         toastOptions={{
+          duration: 3000,
           style: { background: "#1e1f23", border: "1px solid #2e3038", color: "#c5c7d4", fontSize: "12px" },
         }}
       />
 
       {/* ── Sidebar ──────────────────────────────────────────────────────── */}
-      <aside
-        className={`shrink-0 flex flex-col transition-all duration-200 ${sidebarOpen ? "w-52" : "w-[52px]"}`}
+      <motion.aside
+        animate={{ width: sidebarOpen ? 240 : 56 }}
+        transition={{ type: "spring", stiffness: 320, damping: 32, mass: 0.8 }}
+        className="shrink-0 flex flex-col h-screen sticky top-0 overflow-hidden z-20"
         style={{ background: "var(--sidebar-bg)", borderRight: "1px solid var(--sidebar-border)" }}
       >
-        {/* Brand */}
-        <div
-          className={`flex items-center gap-2.5 px-3 py-4 ${sidebarOpen ? "" : "justify-center"}`}
-          style={{ borderBottom: "1px solid var(--sidebar-border)" }}
-        >
-          {/* Logo mark — gradient sparkle */}
-          <div
-            className="w-7 h-7 flex items-center justify-center shrink-0 rounded-lg"
-            style={{
-              background: "linear-gradient(135deg,rgba(217,70,239,0.20),rgba(6,182,212,0.20))",
-              border: "1px solid rgba(217,70,239,0.30)",
-            }}
-          >
-            <AISparkleIcon className="w-3.5 h-3.5" />
+        {/* Brand + collapse toggle row */}
+        <div style={{ borderBottom: "1px solid var(--sidebar-border)" }}>
+          <div className={`flex items-center px-3 py-3.5 ${sidebarOpen ? "gap-2.5" : "justify-between"}`}>
+            {/* Logo mark */}
+            <motion.div
+              className="w-7 h-7 flex items-center justify-center shrink-0 rounded-lg"
+              whileHover={{ scale: 1.08 }}
+              transition={{ type: "spring", stiffness: 380, damping: 22 }}
+              style={{
+                background: "linear-gradient(135deg,rgba(217,70,239,0.25),rgba(6,182,212,0.25))",
+                border:     "1px solid rgba(217,70,239,0.38)",
+                boxShadow:  "0 0 14px rgba(217,70,239,0.14), 0 0 28px rgba(6,182,212,0.07)",
+              }}
+            >
+              <AISparkleIcon className="w-3.5 h-3.5" />
+            </motion.div>
+
+            {sidebarOpen && (
+              <motion.div
+                initial={{ opacity: 0, x: -6 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -6 }}
+                transition={{ duration: 0.15 }}
+                className="leading-none min-w-0 flex-1"
+              >
+                <div className="text-[14px] font-bold tracking-tight" style={{ color: "#f1f5f9" }}>
+                  Omni<span className="ai-gradient">Watch</span>
+                </div>
+                <div className="text-[10px] mt-0.5 tracking-wider uppercase font-semibold" style={{ color: "var(--splunk-muted)" }}>
+                  AI-SOC Platform
+                </div>
+              </motion.div>
+            )}
+
+            {/* Collapse toggle — always visible at top-right of brand area */}
+            <motion.button
+              onClick={() => setSidebarOpen(o => !o)}
+              title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              transition={{ type: "spring", stiffness: 400, damping: 20 }}
+              className="shrink-0 flex items-center justify-center w-6 h-6 rounded-md transition-colors hover:bg-white/8 active:opacity-60"
+              style={{ color: "var(--splunk-muted)" }}
+            >
+              {sidebarOpen
+                ? <ChevronLeft style={{ width: 13, height: 13 }} />
+                : <ChevronRight style={{ width: 13, height: 13 }} />
+              }
+            </motion.button>
           </div>
-          {sidebarOpen && (
-            <div className="leading-none min-w-0">
-              <div className="text-[13px] font-bold tracking-tight" style={{ color: "#f4f4f5" }}>
-                Omni<span className="ai-gradient">Watch</span>
-              </div>
-              <div className="text-[9px] mt-0.5 tracking-wider uppercase font-medium" style={{ color: "var(--splunk-muted)" }}>
-                AI-SOC Platform
-              </div>
-            </div>
-          )}
+          {/* Accent strip below brand */}
+          <div className="sidebar-glow-strip" />
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 py-3 px-1.5 space-y-0.5">
+        <nav className="flex-1 py-3 px-1.5 space-y-0.5 overflow-y-auto overflow-x-hidden">
           {NAV_ITEMS.map(({ page, label, Icon }) => {
             const active = activePage === page;
             return (
-              <button
-                key={page}
-                onClick={() => setActivePage(page)}
-                title={!sidebarOpen ? label : undefined}
-                className={`
-                  w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left
-                  transition-all duration-150 active:scale-[0.98]
-                  ${sidebarOpen ? "" : "justify-center"}
-                `}
-                style={{
-                  background: active
-                    ? "rgba(255,255,255,0.06)"
-                    : "transparent",
-                  borderLeft: active
-                    ? "2px solid var(--splunk-cyan)"
-                    : "2px solid transparent",
-                  color: active ? "#f4f4f5" : "var(--splunk-muted)",
-                }}
-                onMouseEnter={e => { if (!active) e.currentTarget.style.background = "rgba(255,255,255,0.035)"; }}
-                onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
-              >
-                <span className="shrink-0" style={{ width: 15, height: 15, color: active ? "var(--splunk-cyan)" : "inherit" }}>
-                  <Icon className="w-full h-full" strokeWidth={active ? 2 : 1.75} />
-                </span>
-                {sidebarOpen && (
-                  <span className="text-[12px] font-medium tracking-tight truncate">{label}</span>
+              <div key={page} className="relative group/nav">
+                <motion.button
+                  onClick={() => setActivePage(page)}
+                  whileHover={{ x: active ? 0 : (sidebarOpen ? 3 : 0) }}
+                  whileTap={{ scale: 0.97 }}
+                  transition={{ type: "spring", stiffness: 420, damping: 28 }}
+                  className={`
+                    relative w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left
+                    transition-colors duration-120
+                    ${sidebarOpen ? "" : "justify-center"}
+                  `}
+                  style={{
+                    background: active ? "rgba(6,182,212,0.08)" : "transparent",
+                    color: active ? "#e2e8f0" : "var(--splunk-muted)",
+                    boxShadow: active ? "inset 0 0 0 1px rgba(6,182,212,0.15)" : "none",
+                  }}
+                  onMouseEnter={e => { if (!active) e.currentTarget.style.background = "rgba(255,255,255,0.04)"; }}
+                  onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                >
+                  {/* Animated active indicator pip */}
+                  {active && (
+                    <motion.span
+                      layoutId="nav-pip"
+                      className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full"
+                      style={{ background: "var(--splunk-cyan)" }}
+                      transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                    />
+                  )}
+                  <span className="shrink-0" style={{ width: 15, height: 15, color: active ? "var(--splunk-cyan)" : "inherit" }}>
+                    <Icon className="w-full h-full" strokeWidth={active ? 2 : 1.75} />
+                  </span>
+                  {sidebarOpen && (
+                    <span className={`text-[12.5px] tracking-tight truncate ${active ? "font-semibold" : "font-medium"}`}>{label}</span>
+                  )}
+                </motion.button>
+
+                {/* Tooltip — shown on hover only when sidebar is collapsed */}
+                {!sidebarOpen && (
+                  <div
+                    className="pointer-events-none absolute left-full top-1/2 -translate-y-1/2 ml-2 z-50
+                               px-2 py-1 rounded text-[11px] font-medium whitespace-nowrap
+                               opacity-0 group-hover/nav:opacity-100 transition-opacity duration-150"
+                    style={{
+                      background: "#1a1b1f",
+                      border: "1px solid #2e3038",
+                      color: "#c5c7d4",
+                      boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+                    }}
+                  >
+                    {label}
+                  </div>
                 )}
-              </button>
+              </div>
             );
           })}
         </nav>
 
-        {/* Footer — status + collapse */}
+        {/* Footer — status indicators */}
         <div
           className={`px-2 py-3 space-y-1 ${sidebarOpen ? "" : "flex flex-col items-center"}`}
           style={{ borderTop: "1px solid var(--sidebar-border)" }}
         >
           {/* WS status */}
-          <div className={`flex items-center gap-2 px-1.5 py-1 rounded ${sidebarOpen ? "" : "justify-center"}`}>
+          <div
+            className={`relative group/ws flex items-center gap-2 px-1.5 py-1 rounded ${sidebarOpen ? "" : "justify-center"}`}
+            title={!sidebarOpen ? (wsConnected ? "Live — WebSocket connected" : "Offline") : undefined}
+          >
             {wsConnected
               ? <Wifi className="shrink-0 text-emerald-500" style={{ width: 11, height: 11 }} />
               : <WifiOff className="shrink-0" style={{ width: 11, height: 11, color: "var(--splunk-muted)" }} />
@@ -564,7 +969,10 @@ export default function App() {
 
           {/* Monitor status */}
           {monitor?.active && (
-            <div className={`flex items-center gap-2 px-1.5 py-1 rounded ${sidebarOpen ? "" : "justify-center"}`}>
+            <div
+              className={`flex items-center gap-2 px-1.5 py-1 rounded ${sidebarOpen ? "" : "justify-center"}`}
+              title={!sidebarOpen ? `Monitor · ${monitor.files_processed} files` : undefined}
+            >
               <Eye className="shrink-0 text-cyan-500" style={{ width: 11, height: 11 }} />
               {sidebarOpen && (
                 <span className="text-[10px]" style={{ color: "var(--splunk-cyan)" }}>
@@ -576,93 +984,43 @@ export default function App() {
 
           {/* Scanning indicator */}
           {scanning && (
-            <div className={`flex items-center gap-2 px-1.5 py-1 ${sidebarOpen ? "" : "justify-center"}`}>
+            <div
+              className={`flex items-center gap-2 px-1.5 py-1 ${sidebarOpen ? "" : "justify-center"}`}
+              title={!sidebarOpen ? "Scanning…" : undefined}
+            >
               <Loader2 className="shrink-0 animate-spin" style={{ width: 11, height: 11, color: "var(--splunk-amber)" }} />
               {sidebarOpen && (
                 <span className="text-[10px]" style={{ color: "var(--splunk-amber)" }}>Scanning…</span>
               )}
             </div>
           )}
-
-          {/* Collapse toggle */}
-          <button
-            onClick={() => setSidebarOpen(o => !o)}
-            title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
-            className={`
-              w-full flex items-center gap-2 px-1.5 py-1.5 rounded mt-1
-              transition-all hover:bg-white/5 active:opacity-60
-              ${sidebarOpen ? "" : "justify-center"}
-            `}
-            style={{ color: "var(--splunk-muted)" }}
-          >
-            {sidebarOpen
-              ? <ChevronLeft style={{ width: 13, height: 13 }} />
-              : <ChevronRight style={{ width: 13, height: 13 }} />
-            }
-            {sidebarOpen && <span className="text-[10px] font-medium">Collapse</span>}
-          </button>
         </div>
-      </aside>
+      </motion.aside>
 
       {/* ── Main area ────────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0">
 
         {/* ── Top toolbar ──────────────────────────────────────────────────── */}
         <header
-          className="sticky top-0 z-30 flex items-center gap-3 px-4 py-2"
+          className="sticky top-0 z-30 flex items-center gap-3 px-5 py-3"
           style={{ background: "var(--splunk-surface)", borderBottom: "1px solid var(--splunk-border)" }}
         >
-          <span className="text-xs font-semibold text-white tracking-wide">
+          <span className="text-[13px] font-bold text-white tracking-wide">
             {NAV_ITEMS.find(n => n.page === activePage)?.label}
           </span>
-          <span className="text-[10px]" style={{ color: "var(--splunk-muted)" }}>
+          <span className="text-[11px]" style={{ color: "var(--splunk-muted)" }}>
             {NAV_ITEMS.find(n => n.page === activePage)?.description}
           </span>
 
-          {/* Active dataset badge — always visible when a session is loaded */}
-          {activeFileName && (
-            <div
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded"
-              style={{
-                background: "rgba(78,154,241,0.08)",
-                border: "1px solid rgba(78,154,241,0.25)",
-              }}
-            >
-              <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "#4e9af1" }} />
-              <span className="text-[10px] font-medium" style={{ color: "#4e9af1" }}>
-                Active Dataset:
-              </span>
-              <span
-                className="text-[10px] font-mono font-semibold truncate max-w-[180px]"
-                style={{ color: "#c5c7d4" }}
-                title={activeFileName}
-              >
-                {activeFileName}
-              </span>
-            </div>
-          )}
+          {/* Dataset switcher — always visible; shows "No dataset" when empty */}
+          <SessionSwitcherDropdown
+            activeSessionId={activeSessionId}
+            activeFileName={activeFileName}
+            onSwitch={handleSwitchSession}
+            onDelete={handleDeleteSession}
+          />
 
           <div className="ml-auto flex items-center gap-2">
-            {/* CISO Executive Report */}
-            <button
-              onClick={() => {
-                toast.info("Executive Report — coming soon", {
-                  description: "PDF export will aggregate alert telemetry, SOAR metrics, and MITRE coverage into a downloadable report.",
-                  duration: 5000,
-                });
-              }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold
-                         transition-all active:scale-95 hover:opacity-90"
-              style={{
-                background: "linear-gradient(135deg,rgba(217,70,239,0.15),rgba(6,182,212,0.15))",
-                border: "1px solid rgba(217,70,239,0.30)",
-                color: "#e0aaff",
-              }}
-            >
-              <AISparkleIcon className="w-3 h-3" />
-              CISO Executive Report
-            </button>
-
             {/* Clear Data + Upload CSV — only shown on Dashboard */}
             {activePage === "dashboard" && (
               <>
@@ -681,8 +1039,10 @@ export default function App() {
                   {clearing
                     ? <><span className="w-2 h-2 rounded-full border border-current border-t-transparent animate-spin" /> Clearing…</>
                     : confirmClear
-                    ? <><Trash2 className="w-3 h-3" /> Confirm Reset?</>
-                    : <><Trash2 className="w-3 h-3" /> Clear Data</>
+                    ? <><Trash2 className="w-3 h-3" /> Confirm?</>
+                    : activeSessionId
+                    ? <><Trash2 className="w-3 h-3" /> Clear Session</>
+                    : <><Trash2 className="w-3 h-3" /> Purge All</>
                   }
                 </button>
 
@@ -701,35 +1061,56 @@ export default function App() {
 
         {/* ── Page content ──────────────────────────────────────────────── */}
         <div className="flex-1 overflow-auto">
-          {activePage === "dashboard" && (
-            <DashboardPage
-              stats={stats}
-              cicidsStats={cicidsStats}
-              botsData={botsData}
-              alerts={alerts}
-              lastScanId={lastScanId}
-              pipelineCiso={pipelineCompletion?.ciso_summary}
-            />
+          <ErrorBoundary>
+            <AnimatePresence mode="wait">
+            {activePage === "dashboard" && (
+            <motion.div key="dashboard"
+              initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+              className="h-[calc(100vh-53px)] flex flex-col"
+            >
+              <DashboardPage
+                stats={stats}
+                cicidsStats={cicidsStats}
+                botsData={botsData}
+                pipelineCiso={pipelineCompletion?.ciso_summary}
+                sessionId={pipelineCompletion?.session_id ?? activeSessionId ?? undefined}
+                isProving={isProvingRecordId !== null}
+                onIpClick={ip => navigateToLogExplorer({ source_ip: ip })}
+                onMitreClick={id => navigateToLogExplorer({ mitre: id })}
+              />
+            </motion.div>
           )}
 
           {activePage === "logexplorer" && (
-            <div className="h-[calc(100vh-53px)] flex flex-col">
+            <motion.div key="logexplorer"
+              initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+              className="h-[calc(100vh-53px)] flex flex-col"
+            >
               <LogExplorer
                 sessionId={activeSessionId}
-                onReviewSign={(alert) => {
-                  setSelectedAlert(alert);
-                  setActivePage("trustchain");
-                }}
+                onReviewSign={(alert) => setReviewAlert(alert)}
+                initialFilters={logFilters}
               />
-            </div>
+            </motion.div>
           )}
 
           {activePage === "playbooks" && (
-            <PlaybooksPage soarEntries={soarEntries} />
+            <motion.div key="playbooks"
+              initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <PlaybooksPage soarEntries={soarEntries} activeSessionId={activeSessionId} />
+            </motion.div>
           )}
 
           {activePage === "trustchain" && (
-            <div className="p-3 space-y-3">
+            <motion.div key="trustchain"
+              initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+              className="p-3 space-y-3"
+            >
               {/* DAG + Payload Detail side-by-side when an alert is selected */}
               <div className={selectedAlert ? "grid grid-cols-3 gap-3" : ""}>
                 <div className={`rounded-xl overflow-hidden ${selectedAlert ? "col-span-2" : ""}`}
@@ -737,6 +1118,7 @@ export default function App() {
                   <TrustChainDAG
                     nodes={dagNodes}
                     pipelineHash={pipelineCompletion?.chain_tip_hash ?? undefined}
+                    isProving={isProvingRecordId !== null}
                   />
                 </div>
 
@@ -761,16 +1143,13 @@ export default function App() {
 
                     <div className="space-y-2 flex-1">
                       {[
-                        { label: "Source IP",     value: selectedAlert.source_ip ?? "—" },
-                        { label: "Dest IP",        value: selectedAlert.dest_ip ?? "—" },
-                        { label: "Dest Port",      value: String(selectedAlert.dest_port ?? "—") },
-                        { label: "Protocol",       value: selectedAlert.protocol ?? "—" },
+                        { label: "Timestamp",      value: new Date(selectedAlert.ingested_at).toLocaleString() },
                         { label: "Severity",       value: selectedAlert.severity },
                         { label: "Label",          value: selectedAlert.label },
                         { label: "MITRE Technique",value: selectedAlert.mitre_technique ?? "—" },
                         { label: "MITRE Tactic",   value: selectedAlert.mitre_name ?? "—" },
+                        { label: "Anomaly Score",  value: selectedAlert.z_score_bytes != null ? selectedAlert.z_score_bytes.toFixed(2) : "—" },
                         { label: "Chain Hash",     value: selectedAlert.chain_hash ? `${selectedAlert.chain_hash.substring(0, 16)}…` : "—" },
-                        { label: "Ingested At",    value: new Date(selectedAlert.ingested_at).toLocaleString() },
                       ].map(({ label, value }) => (
                         <div key={label}>
                           <p className="text-[9px] uppercase tracking-widest font-semibold" style={{ color: "#4d5060" }}>{label}</p>
@@ -780,12 +1159,7 @@ export default function App() {
                     </div>
 
                     <button
-                      onClick={() => {
-                        if (selectedAlert.source_ip) {
-                          handleProve(selectedAlert.id, selectedAlert.label, selectedAlert.source_ip);
-                        }
-                      }}
-                      disabled={!selectedAlert.source_ip}
+                      onClick={() => handleProve(selectedAlert.id, selectedAlert.label, selectedAlert.source_ip ?? "0.0.0.0", !!(selectedAlert as any).session_id)}
                       className="w-full py-2 rounded text-xs font-bold transition-all active:scale-95 disabled:opacity-40"
                       style={{
                         background: "linear-gradient(135deg,rgba(217,70,239,0.20),rgba(6,182,212,0.20))",
@@ -800,14 +1174,20 @@ export default function App() {
               </div>
 
               {/* Info cards + ABC toggle */}
-              <div className="grid grid-cols-4 gap-2.5">
+              <motion.div
+                className="grid grid-cols-3 gap-2.5"
+                initial="hidden"
+                animate="visible"
+                variants={{ hidden: {}, visible: { transition: { staggerChildren: 0.06 } } }}
+              >
                 {/* ABC Toggle */}
-                <div
-                  className="rounded-lg p-3 flex flex-col justify-between"
+                <motion.div
+                  variants={{ hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0, transition: { duration: 0.22, ease: [0.22,1,0.36,1] } } }}
+                  className="rounded-lg p-3 flex flex-col justify-between glow-card"
                   style={{
-                    background: abcEnabled ? "rgba(6,182,212,0.06)" : "#0d0d10",
-                    border: `1px solid ${abcEnabled ? "#06b6d440" : "#1a1a1f"}`,
-                    transition: "all 0.3s",
+                    background: abcEnabled ? "rgba(6,182,212,0.07)" : "var(--splunk-card)",
+                    border: `1px solid ${abcEnabled ? "rgba(6,182,212,0.30)" : "var(--splunk-border)"}`,
+                    transition: "background 0.3s, border-color 0.3s",
                   }}
                 >
                   <div>
@@ -831,51 +1211,66 @@ export default function App() {
                     className="mt-2 w-full text-[9px] font-bold py-1.5 rounded transition-all"
                     style={{
                       background: abcEnabled ? "rgba(6,182,212,0.2)" : "rgba(255,255,255,0.05)",
-                      border: `1px solid ${abcEnabled ? "#06b6d460" : "#2e3038"}`,
+                      border: `1px solid ${abcEnabled ? "#06b6d460" : "var(--splunk-border)"}`,
                       color: abcEnabled ? "#06b6d4" : "#6b6e80",
                     }}
                   >
                     {abcEnabled ? "DISABLE ABC" : "ENABLE ABC"}
                   </button>
-                </div>
+                </motion.div>
 
-                <div className="rounded-lg p-3" style={{ background: "#0d0d10", border: "1px solid #1a1a1f" }}>
-                  <p className="text-[9px] font-semibold uppercase tracking-widest" style={{ color: "#4d5060" }}>Machine Proof</p>
+                <motion.div
+                  variants={{ hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0, transition: { duration: 0.22, ease: [0.22,1,0.36,1] } } }}
+                  className="rounded-lg p-3 glow-card"
+                  style={{ background: "var(--splunk-card)", border: "1px solid var(--splunk-border)" }}
+                >
+                  <p className="text-[9px] font-semibold uppercase tracking-widest" style={{ color: "var(--splunk-muted)" }}>Machine Proof</p>
                   <p className="text-sm font-bold mt-1 font-mono" style={{ color: "#06b6d4" }}>STARK Receipt</p>
-                  <p className="text-[10px] mt-1" style={{ color: "#3d3f4a" }}>RISC Zero zkVM · ~96-bit security</p>
-                </div>
-                <div className="rounded-lg p-3" style={{ background: "#0d0d10", border: "1px solid #1a1a1f" }}>
-                  <p className="text-[9px] font-semibold uppercase tracking-widest" style={{ color: "#4d5060" }}>Human Proof</p>
-                  <p className="text-sm font-bold mt-1 font-mono" style={{ color: "#d946ef" }}>FIDO2 / ECDSA</p>
-                  <p className="text-[10px] mt-1" style={{ color: "#3d3f4a" }}>WebAuthn · Proof of Oversight</p>
-                </div>
-                <div className="rounded-lg p-3" style={{ background: "#0d0d10", border: "1px solid #1a1a1f" }}>
-                  <p className="text-[9px] font-semibold uppercase tracking-widest" style={{ color: "#4d5060" }}>Replay Shield</p>
+                  <p className="text-[10px] mt-1" style={{ color: "#3d4a5c" }}>RISC Zero zkVM · ~96-bit security</p>
+                </motion.div>
+
+                <motion.div
+                  variants={{ hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0, transition: { duration: 0.22, ease: [0.22,1,0.36,1] } } }}
+                  className="rounded-lg p-3 glow-card"
+                  style={{ background: "var(--splunk-card)", border: "1px solid var(--splunk-border)" }}
+                >
+                  <p className="text-[9px] font-semibold uppercase tracking-widest" style={{ color: "var(--splunk-muted)" }}>Replay Shield</p>
                   <p className="text-sm font-bold mt-1 font-mono" style={{ color: "#22c55e" }}>Spent-Receipt Registry</p>
-                  <p className="text-[10px] mt-1" style={{ color: "#3d3f4a" }}>SQLite WAL · Atomic INSERT OR IGNORE</p>
-                </div>
-              </div>
+                  <p className="text-[10px] mt-1" style={{ color: "#3d4a5c" }}>SQLite WAL · Atomic INSERT OR IGNORE</p>
+                </motion.div>
+              </motion.div>
 
               {/* Main panels */}
               <div className="grid grid-cols-3 gap-3">
-                {/* Edge telemetry spans 2 cols */}
                 <div className="col-span-2">
                   <EdgeTelemetryPanel onProve={handleProve} isProvingRecordId={isProvingRecordId} />
                 </div>
-                {/* Right column: firewall history + FIDO2 */}
+                {/* Right column: firewall history + remediation plan */}
                 <div className="flex flex-col gap-3">
                   <div className="flex-1">
                     <FirewallHistoryPanel />
                   </div>
-                  <Fido2Panel />
+                  <div className="rounded-xl p-3 overflow-auto"
+                       style={{ background: "var(--splunk-card)", border: "1px solid var(--splunk-border)", maxHeight: 340 }}>
+                    <p className="text-[9px] uppercase tracking-widest font-semibold mb-2"
+                       style={{ color: "var(--splunk-muted)" }}>Remediation Plan</p>
+                    <RemediationPlanPanel pipelineCiso={pipelineCompletion?.ciso_summary ?? undefined} />
+                  </div>
                 </div>
               </div>
-            </div>
+            </motion.div>
           )}
 
           {activePage === "settings" && (
-            <SettingsPage />
+            <motion.div key="settings"
+              initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <SettingsPage />
+            </motion.div>
           )}
+          </AnimatePresence>
+          </ErrorBoundary>
         </div>
       </div>
 
@@ -887,11 +1282,24 @@ export default function App() {
             setPipelineCompletion(result);
             setActiveSessionId(result.session_id);
             setActiveFileName(result.filename);
+            localStorage.setItem("ow_session_id",   result.session_id);
+            localStorage.setItem("ow_session_file", result.filename);
             // Bust session-scoped queries so the dashboard fetches fresh data
             qc.invalidateQueries({ queryKey: ["cicids-stats", result.session_id] });
           }}
         />
       )}
+
+      {/* Global AI incident review slide-over — triggered from LogExplorer */}
+      <AiIncidentReview
+        alert={reviewAlert}
+        onClose={() => setReviewAlert(null)}
+        onReviewSign={(alert) => {
+          setReviewAlert(null);
+          setSelectedAlert(alert);
+          setActivePage("trustchain");
+        }}
+      />
     </div>
   );
 }
@@ -901,24 +1309,46 @@ export default function App() {
 function DashboardSkeleton() {
   const shimmer = "rounded-md bg-white/5 animate-pulse";
   return (
-    <div className="p-3 space-y-3">
-      {/* KPI strip */}
-      <div className={`h-9 w-full ${shimmer}`} />
-      {/* Stats cards */}
-      <div className="grid grid-cols-4 gap-2.5">
-        {[...Array(4)].map((_, i) => <div key={i} className={`h-20 ${shimmer}`} />)}
+    <div className="flex flex-col h-full gap-3 p-3">
+      <div className="grid grid-cols-3 gap-3 shrink-0">
+        {[...Array(3)].map((_, i) => <div key={i} className={`h-20 ${shimmer}`} />)}
       </div>
-      {/* Chart grid */}
-      <div className="grid grid-cols-12 gap-2.5">
-        <div className={`col-span-3 h-64 ${shimmer}`} />
-        <div className="col-span-9 space-y-2.5">
-          <div className={`h-20 ${shimmer}`} />
-          <div className="grid grid-cols-2 gap-2.5">
-            <div className={`h-52 ${shimmer}`} />
-            <div className={`h-52 ${shimmer}`} />
-          </div>
-        </div>
+      <div className="grid grid-cols-12 gap-3 flex-1 min-h-0">
+        <div className={`col-span-7 ${shimmer}`} />
+        <div className={`col-span-5 ${shimmer}`} />
       </div>
+      <div className={`flex-1 min-h-0 ${shimmer}`} />
+    </div>
+  );
+}
+
+// ── Hero KPI card ─────────────────────────────────────────────────────────────
+
+function HeroKpi({ label, value, sub, theme, pulse = false }: {
+  label: string; value: string; sub?: string;
+  theme: "neutral" | "red" | "amber" | "cyan";
+  pulse?: boolean;
+}) {
+  const accent =
+    theme === "red"    ? "#e84d4d" :
+    theme === "amber"  ? "#f59e0b" :
+    theme === "cyan"   ? "#06b6d4" : "#4e9af1";
+  return (
+    <div
+      className="rounded-lg p-4 flex flex-col gap-1.5"
+      style={{ background: `${accent}08`, border: `1px solid ${accent}25`, borderTop: `2px solid ${accent}` }}
+    >
+      <p className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5"
+         style={{ color: `${accent}99` }}>
+        {pulse && (
+          <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: accent }} />
+        )}
+        {label}
+      </p>
+      <p className="text-2xl font-bold font-mono leading-none tabular-nums" style={{ color: accent }}>
+        {value}
+      </p>
+      {sub && <p className="text-[9px]" style={{ color: "#4d5060" }}>{sub}</p>}
     </div>
   );
 }
@@ -926,119 +1356,139 @@ function DashboardSkeleton() {
 // ── Dashboard page ────────────────────────────────────────────────────────────
 
 function DashboardPage({
-  stats, cicidsStats, botsData, alerts, lastScanId, pipelineCiso,
+  stats, cicidsStats, botsData, pipelineCiso, sessionId, isProving,
+  onIpClick, onMitreClick,
 }: {
-  stats:        DashboardStats | undefined;
-  cicidsStats:  CicidsStats | undefined;
-  botsData:     any | undefined;
-  alerts:       Alert[];
-  lastScanId:   string | null;
-  pipelineCiso: CisoPipelineSummary | undefined;
+  stats:          DashboardStats | undefined;
+  cicidsStats:    CicidsStats | undefined;
+  botsData:       any | undefined;
+  pipelineCiso:   CisoPipelineSummary | undefined;
+  sessionId:      string | undefined;
+  isProving:      boolean;
+  onIpClick?:     (ip: string) => void;
+  onMitreClick?:  (id: string) => void;
 }) {
-  // Block render until at least one data source has returned — prevents
-  // Recharts from receiving undefined props before queries complete.
+  const [briefingOpen, setBriefingOpen] = useState(false);
+
+  // Fetch full pipeline session to get real-time pending_proofs count
+  const { data: pipelineSession } = useQuery({
+    queryKey: ["pipeline-session", sessionId],
+    queryFn: () => api.getPipelineSession(sessionId!),
+    enabled: !!sessionId,
+    refetchInterval: 5000,
+  });
+
   if (stats === undefined && cicidsStats === undefined && botsData === undefined) {
     return <DashboardSkeleton />;
   }
 
+  const bySev    = cicidsStats?.by_severity ?? {};
+  // Prefer rows_processed (full CSV row count) over total (alerts only) for Total Flows KPI
+  const total    = cicidsStats?.rows_processed ?? cicidsStats?.total ?? stats?.total_events ?? 0;
+  const crit     = bySev.CRITICAL ?? stats?.critical_events ?? 0;
+  const high     = bySev.HIGH ?? 0;
+  const med      = bySev.MEDIUM ?? stats?.suspicious_events ?? 0;
+  const low      = bySev.LOW ?? 0;
+  const threats  = crit + high;
+  const warnings = med + low;
+
+  // STARK queue KPI — shows how many alerts are candidates for ZK verification.
+  // When `isProving` is true a proof is actively generating (15–32 s window).
+  const starkCount  = pipelineSession?.pending_proofs ?? pipelineCiso?.total_alerts ?? 0;
+  const starkValue  = isProving ? "Verifying…" : starkCount.toLocaleString();
+  const starkSub    = isProving ? "STARK proof generating · 15–32 s" : "alerts pending ZK verification";
+  const starkTheme  = isProving ? "amber" : (starkCount > 0 ? "cyan" : "neutral") as "amber" | "cyan" | "neutral";
+
   return (
-    <>
-      <StatsBar stats={stats} />
-      <StatsCards stats={stats} pipelineCiso={pipelineCiso} />
+    <div className="flex flex-col h-full gap-3 p-3 overflow-hidden">
 
-      {/* ── Pipeline Executive Brief — 3-row analyst briefing ──────────────── */}
-      {pipelineCiso && (
-        <PipelineExecutiveBrief
-          pipelineCiso={pipelineCiso}
-          cicidsStats={cicidsStats}
-          botsData={botsData}
-        />
-      )}
-
-      {/* Purple Team Metrics strip */}
-      <div className="px-3 pt-2 pb-0">
-        <PanelErrorBoundary>
-          <PurpleTeamMetrics metrics={botsData?.metrics} />
-        </PanelErrorBoundary>
+      {/* Row 1 — Hero KPIs (4-wide) */}
+      <div className="grid grid-cols-4 gap-3 shrink-0">
+        <HeroKpi label="Total Flows"    value={total.toLocaleString()}    sub="network events processed"    theme="neutral" />
+        <HeroKpi label="Active Threats" value={threats.toLocaleString()}  sub="CRITICAL + HIGH (non-benign)" theme="red" />
+        <HeroKpi label="Warnings"       value={warnings.toLocaleString()} sub="MEDIUM + LOW detections"      theme="amber" />
+        <HeroKpi label="STARK Queue"    value={starkValue}                sub={starkSub}                     theme={starkTheme} pulse={isProving} />
       </div>
 
-      {/* Secondary analysis grid — always visible */}
-      <div className="grid grid-cols-12 gap-2.5 p-3">
-        {/* Left sidebar */}
-        <aside className="col-span-3 space-y-2.5">
-          <BentoPanel title="Severity Distribution">
+      {/* Row 2 — Threat Core: timeline + severity donut + top sources */}
+      <div className="grid grid-cols-12 gap-3 flex-1 min-h-0">
+        <div className="col-span-5 splunk-panel overflow-hidden flex flex-col">
+          <div className="splunk-panel-header">
+            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: "var(--splunk-muted)" }} />
+            Threat Activity
+          </div>
+          <div className="flex-1 p-3 min-h-0">
             <PanelErrorBoundary>
-              <SeverityChart
-                stats={stats}
-                cicidsStats={cicidsStats}
-                botsTactics={botsData?.mitre_tactics}
-              />
+              <ThreatTimelineChart cicidsStats={cicidsStats} sessionId={sessionId} />
             </PanelErrorBoundary>
-          </BentoPanel>
-          <BentoPanel title="Network Protocol Distribution">
+          </div>
+        </div>
+        <div className="col-span-3 splunk-panel overflow-hidden flex flex-col">
+          <div className="splunk-panel-header">
+            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: "var(--splunk-muted)" }} />
+            Severity Distribution
+          </div>
+          <div className="flex-1 p-2 min-h-0 flex items-center justify-center">
             <PanelErrorBoundary>
-              <PortProtocolChart protocols={botsData?.protocols} />
+              <SeverityChart stats={stats} cicidsStats={cicidsStats} botsTactics={botsData?.mitre_tactics} />
             </PanelErrorBoundary>
-          </BentoPanel>
-        </aside>
-
-        {/* Main */}
-        <main className="col-span-9 space-y-2.5">
-          {lastScanId && <KillChainNarrativePanel scanRunId={lastScanId} />}
-
-          <BentoPanel title="MITRE ATT&CK Coverage">
+          </div>
+        </div>
+        <div className="col-span-4 splunk-panel overflow-hidden flex flex-col">
+          <div className="splunk-panel-header">
+            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: "var(--splunk-muted)" }} />
+            Top Threat Sources
+            {pipelineCiso && (
+              <button
+                onClick={() => setBriefingOpen(true)}
+                className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-semibold transition-all"
+                style={{ background: "rgba(217,70,239,0.10)", border: "1px solid rgba(217,70,239,0.30)", color: "#d946ef" }}
+              >
+                <AISparkleIcon className="w-2.5 h-2.5" /> AI Briefing
+              </button>
+            )}
+          </div>
+          <div className="flex-1 overflow-auto">
             <PanelErrorBoundary>
-              <MitreHeatmap
-                alerts={alerts}
-                cicidsStats={cicidsStats}
-                botsTactics={botsData?.mitre_tactics}
-              />
+              <TopThreatSourcesPanel sessionId={sessionId} pipelineCiso={pipelineCiso} onIpClick={onIpClick} />
             </PanelErrorBoundary>
-          </BentoPanel>
-
-          {/* Attack vectors + timeline — only when no pipeline brief (avoids duplication) */}
-          {!pipelineCiso && (
-            <div className="grid grid-cols-2 gap-2.5">
-              <BentoPanel title="Top Attack Vectors">
-                <PanelErrorBoundary>
-                  <ThreatVectorChart
-                    cicidsStats={cicidsStats}
-                    botsTactics={botsData?.mitre_tactics}
-                    pipelineCiso={pipelineCiso}
-                  />
-                </PanelErrorBoundary>
-              </BentoPanel>
-              <BentoPanel title="Threat Activity — 24h Timeline">
-                <PanelErrorBoundary>
-                  <ThreatTimelineChart cicidsStats={cicidsStats} />
-                </PanelErrorBoundary>
-              </BentoPanel>
-            </div>
-          )}
-        </main>
+          </div>
+        </div>
       </div>
 
-      {/* Bottom analytics row */}
-      <div className="grid grid-cols-2 gap-2.5 px-3 pb-3">
-        <BentoPanel title="Financial ROI — Cost Avoidance">
+      {/* Row 3 — ATT&CK Intelligence */}
+      <div className="flex-1 min-h-0 splunk-panel overflow-hidden flex flex-col">
+        <div className="splunk-panel-header">
+          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: "var(--splunk-muted)" }} />
+          ATT&amp;CK Intelligence
+        </div>
+        <div className="flex-1 overflow-auto p-3">
           <PanelErrorBoundary>
-            <FinancialRoiChart roiData={botsData?.roi_data} />
+            <MitreHeatmap
+              alerts={[]}
+              cicidsStats={cicidsStats}
+              botsTactics={botsData?.mitre_tactics}
+              sessionId={sessionId}
+              onMitreClick={onMitreClick}
+            />
           </PanelErrorBoundary>
-        </BentoPanel>
-        <BentoPanel title="MITRE ATT&CK Tactic Breakdown">
-          <PanelErrorBoundary>
-            <MitreTacticChart tactics={botsData?.mitre_tactics} />
-          </PanelErrorBoundary>
-        </BentoPanel>
+        </div>
       </div>
-    </>
+
+      <ExecutiveBriefDrawer
+        open={briefingOpen}
+        onClose={() => setBriefingOpen(false)}
+        pipelineCiso={pipelineCiso}
+        cicidsStats={cicidsStats}
+      />
+    </div>
   );
 }
 
 // ── AI Executive Summary text generator ──────────────────────────────────────
 
 function generateAiSummary(ciso: CisoPipelineSummary): string {
-  const total = ciso.total_alerts;
+  const total = ciso.total_alerts ?? 0;
   if (total === 0) return "No threat events detected in this pipeline session.";
 
   const crit = ciso.by_severity?.CRITICAL ?? 0;
@@ -1066,13 +1516,6 @@ function generateAiSummary(ciso: CisoPipelineSummary): string {
   }
   if (techCount > 0 && topTech) {
     text += ` Correlated ${techCount} MITRE ATT&CK technique${techCount > 1 ? "s" : ""} — top: ${topTech.name} (${topTech.id}).`;
-  }
-  if (ciso.analyst_hours_saved > 0) {
-    text += ` Automated triage reclaimed ${ciso.analyst_hours_saved.toFixed(1)} analyst hours`;
-    if (ciso.cost_avoided_usd > 0) {
-      text += `, avoiding $${ciso.cost_avoided_usd.toLocaleString()} in operational costs`;
-    }
-    text += `.`;
   }
   return text;
 }
@@ -1118,12 +1561,26 @@ function CisoKpiCard({
 // ── Pipeline Executive Brief ──────────────────────────────────────────────────
 
 function PipelineExecutiveBrief({
-  pipelineCiso, cicidsStats, botsData,
+  pipelineCiso, cicidsStats, botsData, sessionId,
 }: {
   pipelineCiso: CisoPipelineSummary;
   cicidsStats:  CicidsStats | undefined;
   botsData:     any | undefined;
+  sessionId:    string | undefined;
 }) {
+  const { data: liveTopIps } = useQuery({
+    queryKey:  ["pipeline-top-ips", sessionId],
+    queryFn:   () => api.getTopIps(sessionId!),
+    enabled:   !!sessionId,
+    staleTime: 60_000,
+  });
+
+  // Prefer live query result over cached ciso_summary to handle sessions where
+  // source_ip was not populated at pipeline-completion time.
+  const topAttackerIps = (liveTopIps && liveTopIps.length > 0)
+    ? liveTopIps
+    : (pipelineCiso.top_attacker_ips ?? []);
+
   const summary = generateAiSummary(pipelineCiso);
   const sevEntries = Object.entries(pipelineCiso.by_severity ?? {})
     .filter(([, v]) => (v as number) > 0)
@@ -1132,12 +1589,9 @@ function PipelineExecutiveBrief({
   return (
     <div className="px-3 pt-3 pb-1 space-y-2.5">
 
-      {/* ── Row 1: AI Analysis box + 3 CISO KPI cards ───────────────────── */}
-      <div className="grid gap-2.5" style={{ gridTemplateColumns: "1fr 260px" }}>
-
-        {/* AI Analysis panel */}
-        <div
-          className="rounded-lg p-4 flex flex-col gap-3"
+      {/* ── AI Analysis panel (full-width) ───────────────────────────────── */}
+      <div
+        className="rounded-lg p-4 flex flex-col gap-3"
           style={{
             background: "linear-gradient(135deg,rgba(14,18,28,0.97) 0%,rgba(10,12,20,0.97) 100%)",
             border: "1px solid rgba(217,70,239,0.22)",
@@ -1207,40 +1661,14 @@ function PipelineExecutiveBrief({
               })}
             </div>
           )}
-        </div>
-
-        {/* CISO KPI column */}
-        <div className="flex flex-col gap-2">
-          <CisoKpiCard
-            label="Alerts Found"
-            value={pipelineCiso.total_alerts.toLocaleString()}
-            sub="Pipeline detections · all severities"
-            accent="#e84d4d"
-            icon="⚠"
-          />
-          <CisoKpiCard
-            label="Analyst Hrs Saved"
-            value={`${pipelineCiso.analyst_hours_saved.toFixed(1)} h`}
-            sub="Via automated triage"
-            accent="#72c811"
-            icon="⏱"
-          />
-          <CisoKpiCard
-            label="Cost Avoided"
-            value={`$${pipelineCiso.cost_avoided_usd.toLocaleString()}`}
-            sub="@ $50/hr analyst rate"
-            accent="#00d4c8"
-            icon="$"
-          />
-        </div>
       </div>
 
       {/* ── Row 2: Top Threat Sources + Top Attack Vectors ───────────────── */}
       <div className="grid grid-cols-2 gap-2.5">
         <BentoPanel title="Top Threat Sources (IPs)">
           <PanelErrorBoundary>
-            {pipelineCiso.top_attacker_ips.length > 0 ? (
-              <TopAttackerIpsWidget ips={pipelineCiso.top_attacker_ips} />
+            {topAttackerIps.length > 0 ? (
+              <TopAttackerIpsWidget ips={topAttackerIps} />
             ) : (
               <div className="flex items-center justify-center h-24 text-xs" style={{ color: "#4d5060" }}>
                 No attacker IP data in this session
@@ -1262,7 +1690,7 @@ function PipelineExecutiveBrief({
       {/* ── Row 3: Hourly Activity Trends (full width) ───────────────────── */}
       <BentoPanel title="Threat Activity Trends — Hourly Distribution">
         <PanelErrorBoundary>
-          <ThreatTimelineChart cicidsStats={cicidsStats} />
+          <ThreatTimelineChart cicidsStats={cicidsStats} sessionId={sessionId} />
         </PanelErrorBoundary>
       </BentoPanel>
 
@@ -1317,7 +1745,8 @@ const ATTACK_COLORS: Record<string, string> = {
   "Web Attack":"#4e9af1",
 };
 
-function vectorColor(label: string): string {
+function vectorColor(label: string | null | undefined): string {
+  if (!label) return "#72c811";
   for (const [k, c] of Object.entries(ATTACK_COLORS)) {
     if (label.startsWith(k)) return c;
   }
@@ -1332,23 +1761,25 @@ function ThreatVectorChart({
   pipelineCiso?: CisoPipelineSummary;
 }) {
   // Priority: pipeline MITRE techniques → CIC-IDS by_label → BOTSv3 tactics
-  let entries: { label: string; count: number }[];
-
-  if (pipelineCiso && pipelineCiso.top_techniques.length > 0) {
-    entries = pipelineCiso.top_techniques
-      .slice(0, 8)
-      .map(t => ({ label: t.name || t.id, count: t.count }));
-  } else {
-    entries = Object.entries(cicidsStats?.by_label ?? {})
+  const entries = useMemo<{ label: string; count: number }[]>(() => {
+    const techniques = pipelineCiso?.top_techniques ?? [];
+    if (techniques.length > 0) {
+      const mapped = techniques
+        .filter(t => t.id != null || t.name != null)
+        .slice(0, 8)
+        .map(t => ({ label: (t.name || t.id) as string, count: t.count }));
+      if (mapped.length > 0) return mapped;
+    }
+    const fromLabel = Object.entries(cicidsStats?.by_label ?? {})
       .filter(([l]) => l.toUpperCase() !== "BENIGN")
       .sort((a, b) => b[1] - a[1])
       .slice(0, 8)
       .map(([label, count]) => ({ label, count }));
-    // Fallback to BOTS tactics if CIC-IDS is empty
-    if (entries.length === 0 && botsTactics && botsTactics.length > 0) {
-      entries = botsTactics.map(t => ({ label: t.tactic, count: t.count }));
-    }
-  }
+    if (fromLabel.length > 0) return fromLabel;
+    if (botsTactics && botsTactics.length > 0)
+      return botsTactics.map(t => ({ label: t.tactic, count: t.count }));
+    return [];
+  }, [pipelineCiso, cicidsStats, botsTactics]);
 
   if (entries.length === 0) {
     return (
@@ -1390,9 +1821,9 @@ function ThreatVectorChart({
               color: "#c5c7d4",
             }}
             cursor={{ fill: "rgba(255,255,255,0.03)" }}
-            formatter={(value: number) => [value.toLocaleString(), "Events"]}
+            formatter={(value: any) => [value.toLocaleString(), "Events"]}
           />
-          <Bar dataKey="count" radius={[0, 3, 3, 0]} maxBarSize={18} label={{ position: "right", fontSize: 10, fill: "#6b6e80", fontFamily: "JetBrains Mono, monospace", formatter: (v: number) => v.toLocaleString() }}>
+          <Bar dataKey="count" radius={[0, 3, 3, 0]} maxBarSize={18} label={{ position: "right", fontSize: 10, fill: "#6b6e80", fontFamily: "JetBrains Mono, monospace", formatter: (v: any) => v.toLocaleString() }}>
             {entries.map(e => (
               <Cell key={e.label} fill={vectorColor(e.label)} opacity={0.82} />
             ))}
@@ -1403,315 +1834,278 @@ function ThreatVectorChart({
   );
 }
 
-// ── ThreatTimelineChart — 24h AreaChart of threat activity ───────────────────
+// ── ThreatTimelineChart — SOC severity-stratified temporal view ───────────────
 
-function ThreatTimelineChart({ cicidsStats }: { cicidsStats: CicidsStats | undefined }) {
-  const { data: hourly } = useQuery({
-    queryKey:        ["hourly-distribution"],
-    queryFn:         api.getHourlyDistribution,
+type TimeWindow = "1h" | "24h" | "7d" | "all";
+
+const TIME_WINDOW_OPTIONS: { value: TimeWindow; label: string }[] = [
+  { value: "1h",  label: "1H" },
+  { value: "24h", label: "24H" },
+  { value: "7d",  label: "7D" },
+  { value: "all", label: "ALL" },
+];
+
+function fmtYAxis(v: number): string {
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000)     return `${(v / 1_000).toFixed(0)}k`;
+  return String(v);
+}
+
+function ThreatTimelineChart({
+  cicidsStats,
+  sessionId,
+}: {
+  cicidsStats: CicidsStats | undefined;
+  sessionId?:  string;
+}) {
+  const [win, setWin]               = useState<TimeWindow>("24h");
+  const [brushRange, setBrushRange] = useState<{ start: number; end: number } | null>(null);
+
+  useEffect(() => { setBrushRange(null); }, [win]);
+
+  const { data: raw } = useQuery({
+    queryKey:        ["hourly-distribution", win, sessionId ?? null],
+    queryFn:         () => api.getHourlyDistribution(win, sessionId ?? null),
     refetchInterval: 120_000,
+    staleTime:       60_000,
   });
 
   const data = useMemo(() => {
-    if (!hourly || hourly.every(h => h.total === 0)) return [];
-    return hourly.map(h => ({
-      time:     `${h.hour.toString().padStart(2, "0")}:00`,
-      threats:  h.threats,
-      benign:   h.benign,
-      critical: Math.round(h.threats * 0.28),
+    if (!raw) return [];
+    return raw.map(h => ({
+      time:    h.bucket,
+      threats: h.threats,
+      medium:  h.medium ?? 0,
+      benign:  h.benign,
+      total:   h.total,
     }));
-  }, [hourly]);
+  }, [raw]);
 
-  const hasData = (cicidsStats?.total ?? 0) > 0;
+  const avgThreats = useMemo(() => {
+    const active = data.filter(d => d.threats > 0);
+    if (!active.length) return 0;
+    return Math.round(active.reduce((s, d) => s + d.threats, 0) / active.length);
+  }, [data]);
 
-  const tooltip = {
-    contentStyle: {
-      background: "#1e1f23",
-      border: "1px solid #2e3038",
-      borderRadius: 4,
-      fontSize: 11,
-      color: "#c5c7d4",
-    },
-    cursor: { stroke: "rgba(255,255,255,0.06)", strokeWidth: 20 },
-  };
+  const peakIdx = useMemo(
+    () => data.reduce((mi, d, i, arr) => d.threats > arr[mi].threats ? i : mi, 0),
+    [data],
+  );
 
-  if (!hasData || data.length === 0) {
+  const tickInterval = useMemo(() => {
+    if (data.length <= 8)  return 0;
+    if (data.length <= 16) return 1;
+    if (data.length <= 30) return 2;
+    return Math.ceil(data.length / 10);
+  }, [data.length]);
+
+  const totalThreats = useMemo(() => data.reduce((s, d) => s + d.threats, 0), [data]);
+  const totalMedium  = useMemo(() => data.reduce((s, d) => s + d.medium,  0), [data]);
+  const totalBenign  = useMemo(() => data.reduce((s, d) => s + d.benign,  0), [data]);
+
+  const hasAnyData    = (cicidsStats?.total ?? 0) > 0;
+  const hasWindowData = data.some(d => d.total > 0);
+  const showBrush     = data.length > 12 || win === "all" || win === "7d";
+
+  const jumpToPeak = useCallback(() => {
+    if (!data.length) return;
+    const half = Math.min(6, Math.floor(data.length / 4));
+    setBrushRange({ start: Math.max(0, peakIdx - half), end: Math.min(data.length - 1, peakIdx + half) });
+  }, [peakIdx, data.length]);
+
+  // Shared window-picker element
+  const windowPicker = (
+    <div className="flex items-center rounded overflow-hidden shrink-0"
+         style={{ background: "#0d0d10", border: "1px solid #2e3038" }}>
+      {TIME_WINDOW_OPTIONS.map(opt => {
+        const active = opt.value === win;
+        return (
+          <button key={opt.value} onClick={() => setWin(opt.value)}
+            className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider transition-colors"
+            style={{
+              background:  active ? "rgba(6,182,212,0.15)" : "transparent",
+              color:       active ? "#06b6d4" : "#4d5060",
+              borderRight: "1px solid #2e3038",
+            }}>
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  if (!hasAnyData) {
     return (
-      <div className="flex flex-col items-center justify-center h-44 gap-2" style={{ color: "#4d5060" }}>
-        <TrendingUpIcon className="w-8 h-8 opacity-15" style={{ color: "var(--splunk-muted)" }} />
-        <p className="text-xs">Threat timeline will appear after telemetry upload</p>
+      <div className="flex flex-col items-center justify-center h-full gap-2" style={{ color: "#4d5060" }}>
+        <TrendingUpIcon className="w-8 h-8 opacity-15" />
+        <p className="text-xs">Upload telemetry to see threat activity</p>
       </div>
     );
   }
 
-  const peakHour = data.reduce((max, d) => d.threats > max.threats ? d : max, data[0]);
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-3 px-1">
-        <span className="text-[10px] font-mono tabular-nums" style={{ color: "#6b6e80" }}>
-          Peak activity at{" "}
-          <span className="font-semibold" style={{ color: "#e84d4d" }}>{peakHour.time}</span>
-          {" "}·{" "}
-          <span className="font-semibold" style={{ color: "#c5c7d4" }}>{peakHour.threats.toLocaleString()}</span>
-          {" "}threat events
-        </span>
-        <span className="text-[9px] uppercase tracking-wider font-semibold" style={{ color: "#4e9af1" }}>
-          24h Window
-        </span>
-      </div>
-      <ResponsiveContainer width="100%" height={160}>
-        <AreaChart data={data} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
-          <defs>
-            <linearGradient id="grad-threats" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%"  stopColor="#e84d4d" stopOpacity={0.35} />
-              <stop offset="95%" stopColor="#e84d4d" stopOpacity={0.02} />
-            </linearGradient>
-            <linearGradient id="grad-critical" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%"  stopColor="#f4a926" stopOpacity={0.5} />
-              <stop offset="95%" stopColor="#f4a926" stopOpacity={0.02} />
-            </linearGradient>
-            <linearGradient id="grad-benign" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%"  stopColor="#4e9af1" stopOpacity={0.18} />
-              <stop offset="95%" stopColor="#4e9af1" stopOpacity={0.01} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid stroke="#2e3038" strokeDasharray="3 3" vertical={false} />
-          <XAxis
-            dataKey="time"
-            tick={{ fontSize: 9, fill: "#4d5060", fontFamily: "JetBrains Mono, monospace" }}
-            tickLine={false}
-            axisLine={false}
-            interval={3}
-          />
-          <YAxis hide />
-          <Tooltip
-            {...tooltip}
-            formatter={(value: number, name: string) => [
-              value.toLocaleString(),
-              name === "threats" ? "Threats" : name === "critical" ? "Critical" : "Benign",
-            ]}
-          />
-          <Area type="monotone" dataKey="benign"   stroke="#4e9af1" strokeWidth={1}   fill="url(#grad-benign)"   strokeOpacity={0.5} dot={false} />
-          <Area type="monotone" dataKey="threats"  stroke="#e84d4d" strokeWidth={1.5} fill="url(#grad-threats)"  dot={false} />
-          <Area type="monotone" dataKey="critical" stroke="#f4a926" strokeWidth={1.5} fill="url(#grad-critical)" dot={false} />
-        </AreaChart>
-      </ResponsiveContainer>
-      {/* Legend */}
-      <div className="flex items-center gap-4 mt-1 px-1">
-        {[
-          { color: "#e84d4d", label: "Threats" },
-          { color: "#f4a926", label: "Critical" },
-          { color: "#4e9af1", label: "Benign" },
-        ].map(({ color, label }) => (
-          <span key={label} className="flex items-center gap-1 text-[9px]" style={{ color: "#6b6e80" }}>
-            <span className="w-2.5 h-px" style={{ background: color, display: "inline-block" }} />
-            {label}
+  // Data exists globally but nothing in this time window
+  if (!hasWindowData) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex items-center justify-between mb-2 px-1">
+          <span className="text-[10px] font-mono" style={{ color: "#4d5060" }}>
+            No events in this window — try a wider range
           </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Purple Team Metrics strip ─────────────────────────────────────────────────
-
-function PurpleTeamMetrics({ metrics }: { metrics?: any }) {
-  const mttd = metrics?.mttd ?? "0s";
-  const mttr = metrics?.mttr ?? "0s";
-  const efficacy = metrics?.efficacy ?? "0%";
-  const coverage = metrics?.coverage ?? "0%";
-  const fpRate = metrics?.fp_rate ?? "0%";
-  const autoResponse = metrics?.auto_response ?? "0%";
-
-  const data = [
-    { label: "MTTD",                value: mttd,        sub: "Mean Time to Detect",      color: "#72c811" },
-    { label: "MTTR",                value: mttr,        sub: "Mean Time to Respond",     color: "#4e9af1" },
-    { label: "Detection Efficacy",  value: efficacy,    sub: "True positive rate",        color: "#d946ef" },
-    { label: "Purple Team Coverage",value: coverage,    sub: "ATT&CK techniques covered", color: "#00d4c8" },
-    { label: "False Positive Rate", value: fpRate,      sub: "Analyst noise reduction",   color: "#f4a926" },
-    { label: "Automated Response",  value: autoResponse,sub: "SOAR playbook coverage",    color: "#8b5cf6" },
-  ];
-  return (
-    <div className="grid grid-cols-6 gap-2 px-3 pb-0 pt-0">
-      {data.map(m => (
-        <div
-          key={m.label}
-          className="rounded-lg px-3 py-2.5"
-          style={{ background: "#0d0d10", border: "1px solid #1a1a1f" }}
-        >
-          <p className="text-[9px] font-semibold uppercase tracking-widest" style={{ color: "#4d5060" }}>{m.label}</p>
-          <p className="text-lg font-bold mt-0.5 font-mono leading-none" style={{ color: m.color }}>{m.value}</p>
-          <p className="text-[8px] mt-1" style={{ color: "#3d3f4a" }}>{m.sub}</p>
+          {windowPicker}
         </div>
-      ))}
-    </div>
-  );
-}
-
-// ── Financial ROI chart ───────────────────────────────────────────────────────
-
-function FinancialRoiChart({ roiData }: { roiData?: any[] }) {
-  const hasData = roiData && roiData.length > 0 && roiData.some(d => (d.avoided ?? 0) + (d.cost ?? 0) + (d.incidents ?? 0) > 0);
-
-  if (!hasData) {
-    return (
-      <div className="flex flex-col items-center justify-center h-44 gap-2" style={{ color: "#4d5060" }}>
-        <TrendingUpIcon className="w-8 h-8 opacity-15" style={{ color: "var(--splunk-muted)" }} />
-        <p className="text-xs">ROI model populates after telemetry upload</p>
       </div>
     );
   }
 
-  const data         = roiData!;
-  const totalAvoided = data.reduce((s, d) => s + (d.avoided ?? 0), 0);
-  const totalCost    = data.reduce((s, d) => s + (d.cost    ?? 0), 0);
-  const roiPct       = totalCost > 0 ? Math.round((totalAvoided - totalCost) / totalCost * 100) : 0;
-  const avoidedFmt   = totalAvoided >= 1000
-    ? `$${(totalAvoided / 1000).toFixed(1)}M`
-    : `$${totalAvoided.toFixed(0)}K`;
-
-  const tooltipStyle = {
-    contentStyle: { background: "#1e1f23", border: "1px solid #2e3038", borderRadius: 4, fontSize: 11, color: "#c5c7d4" },
-    cursor: { fill: "rgba(255,255,255,0.025)" },
+  const peakPoint = data[peakIdx];
+  const ttStyle   = {
+    background: "#13141a", border: "1px solid #2e3038",
+    borderRadius: 6, fontSize: 11, color: "#c5c7d4", padding: "8px 12px",
   };
+
   return (
-    <div>
-      <div className="flex items-center justify-between mb-2 px-1">
-        <span className="text-[10px] font-mono tabular-nums" style={{ color: "#6b6e80" }}>
-          Cumulative avoided:{" "}
-          <span className="font-semibold" style={{ color: "#72c811" }}>{avoidedFmt}</span>
-        </span>
-        <span className="text-[9px] uppercase tracking-wider font-semibold" style={{ color: "#72c811" }}>
-          {totalCost > 0 ? `ROI ${roiPct.toLocaleString()}%` : "Active"}
-        </span>
+    <div className="flex flex-col h-full">
+      {/* ── Header: summary badges + jump-to-peak + window picker ── */}
+      <div className="flex items-start justify-between mb-2 px-1 shrink-0 gap-2 flex-wrap">
+        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+          {totalThreats > 0 && (
+            <span className="px-2 py-0.5 rounded font-mono text-[10px] font-bold tabular-nums"
+                  style={{ background: "rgba(232,77,77,0.12)", color: "#e84d4d", border: "1px solid rgba(232,77,77,0.2)" }}>
+              ● {totalThreats.toLocaleString()} C/H
+            </span>
+          )}
+          {totalMedium > 0 && (
+            <span className="px-2 py-0.5 rounded font-mono text-[10px] font-bold tabular-nums"
+                  style={{ background: "rgba(245,158,11,0.10)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}>
+              ● {totalMedium.toLocaleString()} MED
+            </span>
+          )}
+          {totalBenign > 0 && (
+            <span className="px-2 py-0.5 rounded font-mono text-[10px] tabular-nums"
+                  style={{ color: "#4d5060" }}>
+              {totalBenign.toLocaleString()} benign
+            </span>
+          )}
+          {/* Jump to highest-threat bucket */}
+          {peakPoint && totalThreats > 0 && (
+            <button onClick={jumpToPeak}
+              className="px-2 py-0.5 rounded font-mono text-[10px] transition-colors"
+              style={{ background: "rgba(78,154,241,0.08)", color: "#4e9af1", border: "1px solid rgba(78,154,241,0.18)" }}>
+              ⤢ peak @ {peakPoint.time}
+            </button>
+          )}
+        </div>
+        {windowPicker}
       </div>
-      <ResponsiveContainer width="100%" height={148}>
-        <ComposedChart data={data} margin={{ left: -10, right: 4, top: 4, bottom: 0 }}>
-          <CartesianGrid stroke="#1e2028" strokeDasharray="3 3" vertical={false} />
-          <XAxis dataKey="month" tick={{ fontSize: 8, fill: "#4d5060", fontFamily: "JetBrains Mono, monospace" }} tickLine={false} axisLine={false} />
-          <YAxis yAxisId="left" hide />
-          <YAxis yAxisId="right" orientation="right" hide />
-          <Tooltip
-            {...tooltipStyle}
-            formatter={(value: number, name: string) => [
-              name === "incidents" ? value : `$${value.toLocaleString()}K`,
-              name === "avoided" ? "Cost Avoided" : name === "cost" ? "SOC Cost" : "Incidents",
-            ]}
-          />
-          <Bar yAxisId="left" dataKey="avoided" fill="rgba(114,200,17,0.18)" stroke="#72c811" strokeWidth={1} radius={[2, 2, 0, 0]} maxBarSize={16} />
-          <Bar yAxisId="left" dataKey="cost"    fill="rgba(78,154,241,0.12)" stroke="#4e9af1" strokeWidth={1} radius={[2, 2, 0, 0]} maxBarSize={16} />
-          <Line yAxisId="right" type="monotone" dataKey="incidents" stroke="#f4a926" strokeWidth={1.5} dot={false} />
-        </ComposedChart>
-      </ResponsiveContainer>
-      <div className="flex items-center gap-4 mt-1 px-1">
-        {[
-          { color: "#72c811", label: "Cost Avoided ($K)" },
-          { color: "#4e9af1", label: "SOC Cost ($K)" },
-          { color: "#f4a926", label: "Incidents" },
-        ].map(({ color, label }) => (
-          <span key={label} className="flex items-center gap-1 text-[9px]" style={{ color: "#6b6e80" }}>
-            <span className="w-2.5 h-px" style={{ background: color, display: "inline-block" }} />
-            {label}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
 
-// ── Port / Protocol distribution PieChart ────────────────────────────────────
+      {/* ── Chart ── */}
+      <div className="flex-1 min-h-0">
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={data} margin={{ left: 0, right: 8, top: 6, bottom: showBrush ? 24 : 4 }}>
+            <defs>
+              <linearGradient id="gc2" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%"   stopColor="#e84d4d" stopOpacity={0.52} />
+                <stop offset="100%" stopColor="#e84d4d" stopOpacity={0.02} />
+              </linearGradient>
+              <linearGradient id="gm2" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%"   stopColor="#f59e0b" stopOpacity={0.38} />
+                <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
 
-function PortProtocolChart({ protocols }: { protocols?: any[] }) {
-  const hasData = protocols && protocols.length > 0 && protocols.some(p => (p.value ?? 0) > 0);
+            <CartesianGrid stroke="#1a1b22" strokeDasharray="3 3" vertical={false} />
 
-  if (!hasData) {
-    return (
-      <div className="flex flex-col items-center justify-center h-32 gap-2" style={{ color: "#4d5060" }}>
-        <BarChart2Icon className="w-8 h-8 opacity-15" style={{ color: "var(--splunk-muted)" }} />
-        <p className="text-xs">Protocol distribution populates after telemetry upload</p>
-      </div>
-    );
-  }
+            {/* Right axis — only used by the total-volume bar (hidden, auto-scales independently) */}
+            <YAxis yAxisId="right" orientation="right" hide />
+            {/* Left axis — threats + medium; scaled to threat range so spikes are visible */}
+            <YAxis yAxisId="left"
+              tickFormatter={fmtYAxis}
+              tick={{ fontSize: 10, fill: "#4d5060", fontFamily: "JetBrains Mono, monospace" }}
+              tickLine={false} axisLine={false} width={36}
+            />
+            <XAxis dataKey="time"
+              tick={{ fontSize: 10, fill: "#4d5060", fontFamily: "JetBrains Mono, monospace" }}
+              tickLine={false} axisLine={{ stroke: "#1a1b22" }}
+              interval={tickInterval}
+            />
 
-  const data = protocols!;
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1 px-1">
-        <span className="text-[10px] font-mono" style={{ color: "#6b6e80" }}>
-          Top targeted ports · last 24h
-        </span>
-      </div>
-      <ResponsiveContainer width="100%" height={120}>
-        <PieChart>
-          <Pie
-            data={data}
-            cx="50%"
-            cy="50%"
-            innerRadius={32}
-            outerRadius={54}
-            paddingAngle={2}
-            dataKey="value"
-            strokeWidth={0}
-          >
-            {data.map((entry, i) => (
-              <Cell key={i} fill={entry.color} opacity={0.82} />
-            ))}
-          </Pie>
-          <Tooltip
-            contentStyle={{ background: "#1e1f23", border: "1px solid #2e3038", borderRadius: 4, fontSize: 11, color: "#c5c7d4" }}
-            formatter={(value: number, name: string) => [`${value}%`, name]}
-          />
-          <Legend
-            iconType="square"
-            iconSize={6}
-            formatter={(value) => <span style={{ color: "#6b6e80", fontSize: 9 }}>{value}</span>}
-          />
-        </PieChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-// ── MITRE ATT&CK Tactic breakdown ─────────────────────────────────────────────
-
-function MitreTacticChart({ tactics }: { tactics?: any[] }) {
-  const hasData = tactics && tactics.length > 0 && tactics.some(d => (d.count ?? 0) > 0);
-
-  if (!hasData) {
-    return (
-      <div className="flex flex-col items-center justify-center h-44 gap-2" style={{ color: "#4d5060" }}>
-        <Shield className="w-8 h-8 opacity-15" style={{ color: "var(--splunk-muted)" }} />
-        <p className="text-xs">ATT&CK tactic breakdown populates after telemetry upload</p>
-      </div>
-    );
-  }
-
-  const data = tactics!;
-  const max = Math.max(1, ...data.map(d => d.count));
-  return (
-    <div className="space-y-1.5 pt-1">
-      {data.map(d => (
-        <div key={d.tactic} className="flex items-center gap-2">
-          <span className="text-[9px] font-mono w-28 shrink-0 text-right truncate" style={{ color: "#6b6e80" }}>
-            {d.tactic}
-          </span>
-          <div className="flex-1 h-3 rounded-sm overflow-hidden" style={{ background: "#0d0d10" }}>
-            <div
-              className="h-full rounded-sm"
-              style={{
-                width: `${(d.count / max) * 100}%`,
-                background: d.color,
-                opacity: 0.75,
-                boxShadow: `0 0 6px ${d.color}44`,
+            <Tooltip cursor={{ stroke: "rgba(255,255,255,0.04)", strokeWidth: 20 }}
+              content={({ active, payload, label }) => {
+                if (!active || !payload?.length) return null;
+                const d = payload[0]?.payload;
+                return (
+                  <div style={ttStyle}>
+                    <p className="font-mono font-semibold mb-1.5" style={{ color: "#c5c7d4" }}>{label}</p>
+                    <div className="space-y-0.5">
+                      {d.threats > 0 && <p><span style={{ color: "#e84d4d" }}>● CRIT/HIGH </span><span className="font-mono font-bold tabular-nums" style={{ color: "#e84d4d" }}>{d.threats.toLocaleString()}</span></p>}
+                      {d.medium  > 0 && <p><span style={{ color: "#f59e0b" }}>● MEDIUM    </span><span className="font-mono font-bold tabular-nums" style={{ color: "#f59e0b" }}>{d.medium.toLocaleString()}</span></p>}
+                      {d.benign  > 0 && <p><span style={{ color: "#4e9af1" }}>● BENIGN    </span><span className="font-mono tabular-nums" style={{ color: "#4e9af1" }}>{d.benign.toLocaleString()}</span></p>}
+                      <p className="pt-0.5 mt-0.5" style={{ borderTop: "1px solid #2e3038", color: "#6b6e80" }}>
+                        Total <span className="font-mono tabular-nums">{d.total.toLocaleString()}</span>
+                      </p>
+                    </div>
+                  </div>
+                );
               }}
             />
-          </div>
-          <span className="text-[9px] font-mono tabular-nums w-5 shrink-0 text-right" style={{ color: d.color }}>
-            {d.count}
+
+            {/* Faint total-volume bar (right axis) — traffic context without distorting threat Y-scale */}
+            <Bar yAxisId="right" dataKey="total" fill="#4e9af1" fillOpacity={0.07}
+                 radius={[2, 2, 0, 0]} isAnimationActive={false} />
+
+            {/* Average threat baseline */}
+            {avgThreats > 0 && (
+              <ReferenceLine yAxisId="left" y={avgThreats}
+                stroke="#e84d4d" strokeDasharray="4 3" strokeOpacity={0.4}
+                label={{ value: `avg ${fmtYAxis(avgThreats)}`, position: "insideTopRight",
+                         fontSize: 9, fill: "#e84d4d60", fontFamily: "JetBrains Mono, monospace" }} />
+            )}
+
+            {/* Medium — amber area (left axis) */}
+            <Area yAxisId="left" type="monotone" dataKey="medium"
+              stroke="#f59e0b" strokeWidth={1.5} fill="url(#gm2)"
+              dot={false} isAnimationActive={false} connectNulls={true} />
+
+            {/* CRIT/HIGH — red area on top (left axis, scaled to threat range) */}
+            <Area yAxisId="left" type="monotone" dataKey="threats"
+              stroke="#e84d4d" strokeWidth={2} fill="url(#gc2)"
+              dot={false} isAnimationActive={false} connectNulls={true} />
+
+            {/* Brush — pan/zoom for multi-day or long datasets */}
+            {showBrush && (
+              <Brush dataKey="time" height={18}
+                startIndex={brushRange?.start ?? 0}
+                endIndex={brushRange?.end ?? Math.max(0, data.length - 1)}
+                onChange={r => {
+                  if (r && typeof r.startIndex === "number" && typeof r.endIndex === "number")
+                    setBrushRange({ start: r.startIndex, end: r.endIndex });
+                }}
+                fill="#0d0d10" stroke="#2e3038" travellerWidth={7}
+                tick={{ fontSize: 9, fill: "#4d5060", fontFamily: "JetBrains Mono, monospace" }}
+              />
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* ── Legend ── */}
+      <div className="flex items-center gap-4 mt-1 px-1 shrink-0">
+        {[
+          { color: "#e84d4d", label: "CRIT/HIGH" },
+          { color: "#f59e0b", label: "MEDIUM" },
+          { color: "#4e9af1", label: "Total traffic" },
+        ].map(({ color, label }) => (
+          <span key={label} className="flex items-center gap-1.5 text-[9px]" style={{ color: "#6b6e80" }}>
+            <span className="w-3 h-px shrink-0" style={{ background: color, display: "inline-block" }} />
+            {label}
           </span>
-        </div>
-      ))}
+        ))}
+        {sessionId && (
+          <span className="ml-auto text-[8px] uppercase tracking-wider font-semibold" style={{ color: "#22c55e40" }}>
+            · session
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -1840,7 +2234,13 @@ function PlaybookEditorModal({
 
 // ── Playbooks page ────────────────────────────────────────────────────────────
 
-function PlaybooksPage({ soarEntries }: { soarEntries: CicidsPlaybookLog[] }) {
+function PlaybooksPage({
+  soarEntries,
+  activeSessionId,
+}: {
+  soarEntries:     CicidsPlaybookLog[];
+  activeSessionId: string | null;
+}) {
   const qc = useQueryClient();
   const [editingEntry,    setEditingEntry]   = useState<CicidsPlaybookLog | null>(null);
   const [actionOverrides, setActionOverrides] = useState<Record<number, ActionOverride>>({});
@@ -1857,9 +2257,20 @@ function PlaybooksPage({ soarEntries }: { soarEntries: CicidsPlaybookLog[] }) {
     refetchInterval: 30_000,
   });
 
+  // Session-scoped SOAR feed — always active when a pipeline session is loaded.
+  // Uses the /api/pipeline/soar-feed endpoint which maps CRITICAL/HIGH/MEDIUM
+  // alerts to realistic playbook execution entries, bypassing the need for a
+  // live SOAR engine to have fired.
+  const { data: sessionSoarFeed = [] } = useQuery({
+    queryKey:  ["session-soar-feed", activeSessionId],
+    queryFn:   () => api.getSessionSoarFeed(activeSessionId!, 50),
+    enabled:   !!activeSessionId,
+    staleTime: 60_000,
+  });
+
   const seen = new Set<number>();
   const merged: CicidsPlaybookLog[] = [];
-  for (const e of [...soarEntries, ...persisted]) {
+  for (const e of [...soarEntries, ...persisted, ...sessionSoarFeed]) {
     if (!seen.has(e.id)) { seen.add(e.id); merged.push(e); }
   }
   const allEntries = merged.slice(0, 50);

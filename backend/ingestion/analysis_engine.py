@@ -67,6 +67,10 @@ _CUSUM_K_FACTOR  = 0.5  # allowance = K_FACTOR × median L1 under benign traffic
 _CUSUM_THRESHOLD = 10.0  # DAS-CUSUM alert threshold (real-valued; Q14-encoded for guest)
 _MAX_CUSUM_IPS   = 5_000  # max distinct source IPs to track (memory guard)
 
+# Tracks which schema types have already emitted their first-batch diagnostic.
+# Module-level so the flag persists for the lifetime of the FastAPI process.
+_DIAG_FIRST_BATCH: set = set()
+
 
 # ── SQLite lock-retry decorator ───────────────────────────────────────────────
 
@@ -238,7 +242,7 @@ def derive_mitre(
 # ── Schema Detection & Field Normalization ────────────────────────────────────
 
 _CANONICAL_COLS = (
-    "source_ip", "dest_ip", "dest_port", "protocol",
+    "source_ip", "source_port", "dest_ip", "dest_port", "protocol",
     "label", "bytes_out", "bytes_in", "packets", "timestamp",
 )
 
@@ -247,13 +251,21 @@ _SCHEMA_MARKERS: dict[str, set[str]] = {
         "label", "flow duration", "total fwd packets",
         "total backward packets", "destination port",
     },
-    "botsv3": {"sourcetype", "_raw", "splunk_server", "source"},
+    # Expanded BOTSv3 markers — covers both full Splunk exports (which include
+    # _raw / splunk_server) AND stripped CSV exports (which only have _time,
+    # sourcetype, src_ip, dest_ip, dest_port, etc.).
+    # detect_schema() gives botsv3 special priority when "sourcetype" is present.
+    "botsv3": {
+        "sourcetype", "_raw", "splunk_server", "source",
+        "_time", "src_ip", "dest_ip", "dest_port",
+    },
     "zeek":   {"id.orig_h", "id.resp_h", "orig_bytes", "id.resp_p"},
 }
 
 _SCHEMA_MAPS: dict[str, dict[str, str]] = {
     "cicids2017": {
         "source ip":                   "source_ip",
+        "source port":                 "source_port",
         "destination ip":              "dest_ip",
         "destination port":            "dest_port",
         "protocol":                    "protocol",
@@ -265,23 +277,60 @@ _SCHEMA_MAPS: dict[str, dict[str, str]] = {
         "flow duration":               "flow_duration",
     },
     "botsv3": {
-        "src_ip":    "source_ip",
-        "src":       "source_ip",
-        "dest_ip":   "dest_ip",
-        "dest":      "dest_ip",
-        "dst_ip":    "dest_ip",
-        "dst":       "dest_ip",
-        "dest_port": "dest_port",
-        "dst_port":  "dest_port",
-        "protocol":  "protocol",
-        "proto":     "protocol",
-        "_time":     "timestamp",
-        "sourcetype":"label",
-        "bytes_out": "bytes_out",
-        "bytes":     "bytes_out",
+        # Source IP aliases
+        # NOTE: "ip" intentionally excluded — Splunk's generic 'ip' metadata
+        # field is almost always empty in BOTSv3 exports, and its presence in
+        # the 2,060-column header causes it to claim the source_ip canonical
+        # slot before the populated 'src_ip' column can.  See root-cause
+        # analysis: 288,569 alerts with NULL source_ip traced to this alias.
+        "src_ip":        "source_ip",
+        "src":           "source_ip",
+        "sourceip":      "source_ip",
+        # Source port aliases
+        "src_port":      "source_port",
+        "sport":         "source_port",
+        "spt":           "source_port",
+        "sourceport":    "source_port",
+        # Dest IP aliases
+        "dest_ip":       "dest_ip",
+        "dest":          "dest_ip",
+        "dst_ip":        "dest_ip",
+        "dst":           "dest_ip",
+        "destinationip": "dest_ip",
+        # Dest port aliases
+        "dest_port":     "dest_port",
+        "dst_port":      "dest_port",
+        "dpt":           "dest_port",
+        "dport":         "dest_port",          # ← added
+        "destinationport": "dest_port",
+        # Protocol
+        "protocol":      "protocol",
+        "proto":         "protocol",
+        "app":           "protocol",            # ← Palo Alto application field
+        # Timestamp
+        "_time":         "timestamp",
+        "time":          "timestamp",           # ← added (some exports strip leading _)
+        "timestamp":     "timestamp",
+        # Label / sourcetype
+        "sourcetype":    "label",
+        # Bytes aliases — covers Zeek-in-BOTSv3 and stream: sourcetypes
+        "bytes_out":     "bytes_out",
+        "bytes":         "bytes_out",
+        "out_bytes":     "bytes_out",
+        "orig_bytes":    "bytes_out",           # ← Zeek embedded in BOTSv3
+        "sent_bytes":    "bytes_out",
+        "bytes_in":      "bytes_in",
+        "resp_bytes":    "bytes_in",            # ← Zeek embedded in BOTSv3
+        "recv_bytes":    "bytes_in",
+        # Packet count aliases
+        "packets":       "packets",
+        "pkt_count":     "packets",
+        "orig_pkts":     "packets",             # ← Zeek embedded in BOTSv3
+        "pkts":          "packets",
     },
     "zeek": {
         "id.orig_h": "source_ip",
+        "id.orig_p": "source_port",
         "id.resp_h": "dest_ip",
         "id.resp_p": "dest_port",
         "proto":     "protocol",
@@ -296,17 +345,30 @@ _SCHEMA_MAPS: dict[str, dict[str, str]] = {
         "source_ip":       "source_ip",
         "srcip":           "source_ip",
         "src":             "source_ip",
+        "source":          "source_ip",
         "ip_src":          "source_ip",
+        "sourceip":        "source_ip",
+        "src_port":        "source_port",
+        "source_port":     "source_port",
+        "source port":     "source_port",
+        "sport":           "source_port",
+        "spt":             "source_port",
+        "sp":              "source_port",
+        "sourceport":      "source_port",
         "dst_ip":          "dest_ip",
         "dest_ip":         "dest_ip",
         "destination ip":  "dest_ip",
         "dstip":           "dest_ip",
         "dst":             "dest_ip",
+        "dest":            "dest_ip",
         "ip_dst":          "dest_ip",
+        "destinationip":   "dest_ip",
         "dst_port":        "dest_port",
         "dest_port":       "dest_port",
         "destination port":"dest_port",
         "dport":           "dest_port",
+        "dpt":             "dest_port",
+        "destinationport": "dest_port",
         "proto":           "protocol",
         "protocol":        "protocol",
         "label":           "label",
@@ -314,6 +376,7 @@ _SCHEMA_MAPS: dict[str, dict[str, str]] = {
         "category":        "label",
         "class":           "label",
         "type":            "label",
+        "sourcetype":      "label",   # Splunk/BOTSv3 exports use this field name
         "bytes":           "bytes_out",
         "bytes_out":       "bytes_out",
         "out_bytes":       "bytes_out",
@@ -330,8 +393,66 @@ _SCHEMA_MAPS: dict[str, dict[str, str]] = {
 }
 
 
+import re as _re_hdr
+_HEADER_JUNK_RE = _re_hdr.compile(r'[\x00-\x1f\x7f﻿�]+')
+
+# ── Migration notice ──────────────────────────────────────────────────────────
+# The ingestion engine now uses pandas-native .str.strip().str.lower() as the
+# primary column-header sanitizer.  If you are upgrading from a version that
+# produced NULL source_ip / dest_ip values (visible as "Unknown" in the Log
+# Explorer), existing sessions in the database were ingested with the old code
+# and still have NULL IPs.  You MUST clear the database and re-upload the CSV
+# for the IPs to be extracted correctly and appear in the dashboard.
+_MIGRATION_NOTICE_PRINTED = False
+
+
+def _print_migration_notice() -> None:
+    global _MIGRATION_NOTICE_PRINTED
+    if _MIGRATION_NOTICE_PRINTED:
+        return
+    _MIGRATION_NOTICE_PRINTED = True
+    msg = (
+        "\n"
+        "╔══════════════════════════════════════════════════════════════════╗\n"
+        "║  OmniWatch — Ingestion Engine Fix Applied                       ║\n"
+        "║                                                                  ║\n"
+        "║  Column-header whitespace stripping has been hardened.          ║\n"
+        "║  Existing sessions with NULL source_ip / dest_ip (shown as      ║\n"
+        "║  'Unknown' in Log Explorer) were ingested with the old code.    ║\n"
+        "║                                                                  ║\n"
+        "║  ACTION REQUIRED:                                                ║\n"
+        "║  1. Click the 'Clear Data' button in the dashboard, OR          ║\n"
+        "║     call DELETE /api/system/reset from the API.                 ║\n"
+        "║  2. Re-upload your CSV file.                                     ║\n"
+        "║  IPs will now be extracted and displayed correctly.              ║\n"
+        "╚══════════════════════════════════════════════════════════════════╝\n"
+    )
+    print(msg, flush=True)
+    logger.warning(
+        "MIGRATION NOTICE: column-header whitespace fix applied. "
+        "Existing sessions with NULL IPs must be cleared and re-ingested."
+    )
+
+
+def _sanitize_header(col: str) -> str:
+    """Strip BOM, null bytes, control chars, whitespace; lowercase."""
+    return _HEADER_JUNK_RE.sub('', col).strip().lower()
+
+
 def detect_schema(headers: list[str]) -> str:
-    norm = {h.strip().lower() for h in headers}
+    norm = {_sanitize_header(h) for h in headers}
+
+    # BOTSv3 priority boost: if "sourcetype" is in the headers (a Splunk-
+    # specific field that never appears in CICIDS-2017 or Zeek exports),
+    # classify as botsv3 immediately — even if only one other marker matches.
+    # This catches stripped CSV exports that lack _raw / splunk_server.
+    if "sourcetype" in norm:
+        botsv3_markers = _SCHEMA_MARKERS["botsv3"]
+        # Need at least sourcetype + one more BOTSv3 field to avoid false-
+        # positive on a generic CSV that happens to have a "sourcetype" column.
+        if len(botsv3_markers & norm) >= 2:
+            return "botsv3"
+
     for schema, markers in _SCHEMA_MARKERS.items():
         if len(markers & norm) >= 2:
             return schema
@@ -339,24 +460,292 @@ def detect_schema(headers: list[str]) -> str:
 
 
 def normalize_chunk(df: "pd.DataFrame", schema: str) -> "pd.DataFrame":
-    df = df.copy()
-    df.columns = [c.strip() for c in df.columns]
+    import pandas as pd
 
-    # BOTSv3 Splunk exports often contain duplicate column headers.
-    # Keep only the first occurrence of each name so every downstream
-    # call to df[col] or df.get(col) always yields a Series, never a DataFrame.
+    _print_migration_notice()
+
+    df = df.copy()
+
+    # ── Step 1: pandas-native whitespace strip + lowercase ───────────────────
+    # CIC-IDS-2017 (and some Splunk exports) embed leading/trailing whitespace
+    # in CSV header cells (e.g. " Source IP", " Destination IP").  When the
+    # Polars Layer-2 coercion fallback fires it skips _sanitize_pl_col_names and
+    # hands pandas a raw frame with those dirty headers.  The per-element
+    # _sanitize_header list comprehension can silently misbehave in that path
+    # because Polars string scalars don't always behave identically to Python
+    # str with re.sub.  Using the pandas .str accessor is the only path that is
+    # guaranteed to work regardless of how the DataFrame arrived here.
+    _raw_cols = list(df.columns)
+    df.columns = pd.Index(df.columns).str.strip().str.lower()
+    _dirty = [r for r, c in zip(_raw_cols, df.columns) if str(r) != str(c)]
+    if _dirty:
+        logger.debug(
+            "normalize_chunk: cleaned %d header(s) with whitespace/case issues "
+            "(schema=%s): %s",
+            len(_dirty), schema, _dirty[:8],
+        )
+
+    # ── Step 1b: BOM / null-byte / control-char cleanup ──────────────────────
+    # _sanitize_header handles U+FEFF BOM, null bytes, and Unicode replacement
+    # chars that .str.strip() does not remove.  It is idempotent on already-clean
+    # strings, so safe to run after the vectorized strip above.
+    df.columns = [_sanitize_header(c) for c in df.columns]
+
+    # ── Step 2: remove raw-level duplicate column names ───────────────────────
+    # BOTSv3 Splunk exports repeat the same raw header (e.g. two "_raw" cols).
+    # Keep the first occurrence; downstream code always expects a Series, not
+    # a 2-D slice.
     df = df.loc[:, ~df.columns.duplicated(keep="first")]
 
-    col_map = _SCHEMA_MAPS.get(schema, _SCHEMA_MAPS["generic"])
+    # ── Step 3: build rename map — guard against canonical-space collisions ───
+    # The previous guard (`canonical not in rename.values()`) blocked two
+    # aliases from both targeting the same canonical, but it did NOT prevent
+    # the case where the canonical already exists as a raw column:
+    #
+    #   CSV columns: ["bytes", "bytes_out"]
+    #   If "bytes" is processed first → rename["bytes"] = "bytes_out"
+    #   df.rename() then creates a second "bytes_out" column → crash
+    #
+    # Fix: also skip when the target canonical already exists in the frame,
+    # unless the column IS already the canonical (rename-to-self is a no-op).
+    col_map     = _SCHEMA_MAPS.get(schema, _SCHEMA_MAPS["generic"])
+    existing    = set(df.columns)   # snapshot before any renaming
     rename: dict[str, str] = {}
     for col in df.columns:
-        canonical = col_map.get(col.lower())
-        if canonical and canonical not in rename.values():
-            rename[col] = canonical
+        canonical = col_map.get(col)
+        if not canonical:
+            continue
+        if canonical in rename.values():
+            continue  # another alias already claimed this target
+        if canonical in existing and canonical != col:
+            continue  # target already exists as a raw column; don't create a duplicate
+        rename[col] = canonical
+
     df = df.rename(columns=rename)
+
+    # ── Step 4: coalesce any surviving canonical duplicates ───────────────────
+    # Rare edge case: Polars itself can emit two columns with the same sanitized
+    # name if the source CSV has pathological headers.  Merge them by taking
+    # the first non-null value per row, then drop the extras.
+    if df.columns.duplicated().any():
+        merged: dict[str, "pd.Series"] = {}
+        for col in df.columns:
+            raw = df[col]
+            # If df[col] returns a DataFrame (still has dupes), take first column
+            s = raw.iloc[:, 0] if isinstance(raw, pd.DataFrame) else raw
+            if col in merged:
+                merged[col] = merged[col].combine_first(s)
+            else:
+                merged[col] = s
+        df = pd.DataFrame(merged, index=df.index)
+
+    # ── Step 4b: fuzzy fallback for key IP / port / numerical columns ───────────
+    # After the strict schema-map rename, some datasets use non-standard header
+    # spellings.  Check a priority list of aliases for each canonical column and
+    # rename the first match found.  Numerical columns (bytes_out, bytes_in,
+    # packets, flow_duration) are included here so LODA / DDSketch / Z-score
+    # receive real feature values instead of all-zero arrays.
+    _FUZZY_ALIASES: dict[str, list[str]] = {
+        # ── Network 5-tuple ────────────────────────────────────────────────────
+        "source_ip":     ["src_ip", "src ip", "ip_src", "ip.src", "source.ip",
+                          "srcip", "src_address", "source_address", "ipv4_src_addr"],
+        "dest_ip":       ["dst_ip", "dst ip", "destination ip", "ip_dst", "ip.dst",
+                          "destination.ip", "dstip", "dst_address", "dest_address",
+                          "destination_address", "ipv4_dst_addr"],
+        "source_port":   ["src_port", "srcport", "src port", "sport",
+                          "source.port", "l4_src_port", "tcp_srcport", "udp_srcport"],
+        "dest_port":     ["dst_port", "dstport", "dst port", "dport",
+                          "destination.port", "l4_dst_port", "tcp_dstport", "udp_dstport"],
+        # ── Numerical ML features — ordered highest-fidelity first ─────────────
+        # CIC-IDS-2017 public feature CSV uses "tot_fwd_bytes" / "tot_bwd_bytes".
+        # BOTSv3 Zeek rows use "orig_bytes" / "resp_bytes".
+        # Generic exports may use "fwd_bytes", "bytesout", "sent_bytes", etc.
+        "bytes_out":     ["tot_fwd_bytes", "fwd_bytes", "out_bytes", "bytesout",
+                          "sent_bytes", "bytes_sent", "orig_bytes", "src_bytes",
+                          "fwd header length", "fwd header length.1"],
+        "bytes_in":      ["tot_bwd_bytes", "bwd_bytes", "in_bytes", "bytesin",
+                          "recv_bytes", "bytes_recv", "resp_bytes", "dst_bytes",
+                          "bwd header length"],
+        "packets":       ["tot_pkts", "total_packets", "pkts", "packet_count",
+                          "flow_packets", "total fwd packets", "total backward packets"],
+        "flow_duration": ["duration", "flow_duration_ms", "flow_duration_micro", "dur",
+                          "flow duration"],
+    }
+    for canonical, aliases in _FUZZY_ALIASES.items():
+        if canonical in df.columns:
+            continue  # already populated — strict rename succeeded
+        for alias in aliases:
+            if alias in df.columns:
+                df = df.rename(columns={alias: canonical})
+                logger.debug(
+                    "normalize_chunk [%s]: fuzzy-mapped %r -> %r",
+                    schema, alias, canonical,
+                )
+                break
+
+    # ── Step 4c.1: coalesce sparse numerical feature columns ─────────────────
+    # Some datasets populate different byte/packet columns per sourcetype (e.g.
+    # BOTSv3 Zeek rows have "orig_bytes" while Windows rows have "bytes").  After
+    # the fuzzy rename the canonical column may still have NaN gaps; backfill from
+    # any surviving donor aliases so LODA / DDSketch see real values, not zeros.
+    _NUM_COALESCE: dict[str, list[str]] = {
+        "bytes_out":     ["tot_fwd_bytes", "fwd_bytes", "orig_bytes", "bytes",
+                          "out_bytes", "bytesout", "sent_bytes", "bytes_sent", "src_bytes"],
+        "bytes_in":      ["tot_bwd_bytes", "bwd_bytes", "resp_bytes",
+                          "in_bytes", "bytesin", "recv_bytes", "bytes_recv", "dst_bytes"],
+        "packets":       ["tot_pkts", "total_packets", "pkts", "packet_count",
+                          "flow_packets", "orig_pkts", "pkt_count"],
+        "flow_duration": ["duration", "flow_duration_ms", "flow_duration_micro", "dur"],
+    }
+    import pandas as _pd_nc
+    for _num_canon, _num_donors in _NUM_COALESCE.items():
+        if _num_canon not in df.columns:
+            continue
+        _nc_col = df[_num_canon]
+        if isinstance(_nc_col, _pd_nc.DataFrame):
+            _nc_col = _nc_col.iloc[:, 0]
+        _nc_col = _pd_nc.to_numeric(_nc_col, errors="coerce")
+        if _nc_col.notna().all():
+            continue  # canonical fully populated — no coalescing needed
+        for _nd in _num_donors:
+            if _nd not in df.columns or _nd == _num_canon:
+                continue
+            _donor = df[_nd]
+            if isinstance(_donor, _pd_nc.DataFrame):
+                _donor = _donor.iloc[:, 0]
+            _donor_num = _pd_nc.to_numeric(_donor, errors="coerce")
+            if _donor_num.notna().any():
+                _filled_before = _nc_col.notna().sum()
+                _nc_col = _nc_col.combine_first(_donor_num)
+                _filled_after = _nc_col.notna().sum()
+                if _filled_after > _filled_before:
+                    logger.debug(
+                        "normalize_chunk [%s]: coalesced %d numeric values from %r into %r",
+                        schema, _filled_after - _filled_before, _nd, _num_canon,
+                    )
+        df[_num_canon] = _nc_col
+
+    # ── Step 4c: coalesce sparse IP columns ──────────────────────────────────
+    # BOTSv3 Splunk exports mix sourcetypes that populate different IP columns:
+    # e.g. Zeek rows have 'src_ip', Windows EventLog rows have 'source_address',
+    # AWS CloudTrail rows have 'sourceipaddress'.  After the schema-map rename,
+    # only one of these claims the canonical 'source_ip' slot — the rest are
+    # orphaned.  Coalescing backfills NaN/None values in the canonical column
+    # from any remaining IP-like columns, so no rows lose their IP data.
+    _IP_COALESCE: dict[str, list[str]] = {
+        "source_ip": [
+            "src_ip", "src", "sourceip", "ip", "clientip", "c_ip",
+            "source_address", "sourceipaddress", "sourceaddress",
+            "ip_src", "ipv4_src_addr", "src_address",
+        ],
+        "dest_ip": [
+            "dest_ip", "dst_ip", "dst", "destip", "dstip", "serverip",
+            "s_ip", "destination_address", "destinationaddress",
+            "ip_dst", "ipv4_dst_addr", "dst_address", "dest_address",
+        ],
+    }
+    for canonical, donors in _IP_COALESCE.items():
+        if canonical not in df.columns:
+            continue
+        canon_col = df[canonical]
+        if isinstance(canon_col, pd.DataFrame):
+            canon_col = canon_col.iloc[:, 0]
+        # Only coalesce if the canonical column has gaps
+        if canon_col.notna().all():
+            continue
+        for donor_name in donors:
+            if donor_name not in df.columns or donor_name == canonical:
+                continue
+            donor = df[donor_name]
+            if isinstance(donor, pd.DataFrame):
+                donor = donor.iloc[:, 0]
+            if donor.notna().any():
+                filled_before = canon_col.notna().sum()
+                canon_col = canon_col.combine_first(donor)
+                filled_after = canon_col.notna().sum()
+                if filled_after > filled_before:
+                    logger.debug(
+                        "normalize_chunk [%s]: coalesced %d IPs from %r into %r",
+                        schema, filled_after - filled_before, donor_name, canonical,
+                    )
+        df[canonical] = canon_col
+
+    # ── Step 5: ensure every canonical column exists ──────────────────────────
     for canon in _CANONICAL_COLS:
         if canon not in df.columns:
             df[canon] = None
+
+    # ── Step 5b: warn when IP columns are absent from the source data ─────────
+    # The CIC-IDS-2017 public/feature-extracted releases omit Source IP and
+    # Destination IP columns entirely — they were scrubbed before publication.
+    # Log once per schema so operators know why IPs show as blank in the UI.
+    _ip_missing = (
+        df["source_ip"].isna().all() and df["dest_ip"].isna().all()
+        if "source_ip" in df.columns and "dest_ip" in df.columns else True
+    )
+    if _ip_missing and schema not in _DIAG_FIRST_BATCH:
+        logger.warning(
+            "normalize_chunk [%s]: source_ip and dest_ip are absent in the source CSV. "
+            "This is expected for CIC-IDS-2017 feature-extracted datasets that do not "
+            "include raw IP headers. Flows will appear in the Log Explorer without IP "
+            "addresses. To see IPs, use a dataset that contains 'Source IP' / "
+            "'Destination IP' columns (e.g. BOTSv3 or a full-capture CICIDS CSV).",
+            schema,
+        )
+
+    # ── Step 6: numeric coercion for ML-relevant columns ─────────────────────
+    # When the Polars Layer-2 fallback fires, all columns arrive as Python str.
+    # Explicitly coercing here ensures DDSketch and LODA receive float arrays
+    # instead of string arrays.  pd.to_numeric(errors="coerce") is a no-op on
+    # columns that are already numeric and turns un-parseable strings to NaN.
+    # fillna(0.0) is mandatory: BOTSv3 / Splunk exports embed "-" literals and
+    # empty strings that coerce to NaN.  Without the fill, LODA sees all-zero
+    # feature rows and declares its threshold 0 ("model is BLIND" log line).
+    _NUMERIC_COLS = (
+        "bytes_out", "bytes_in", "packets",
+        "flow_duration", "dest_port", "source_port",
+    )
+    for _nc in _NUMERIC_COLS:
+        if _nc not in df.columns:
+            continue
+        try:
+            _s = df[_nc]
+            if isinstance(_s, pd.DataFrame):
+                _s = _s.iloc[:, 0]
+            df[_nc] = pd.to_numeric(_s, errors="coerce").fillna(0.0)
+        except Exception:
+            df[_nc] = 0.0  # last-resort: column exists but is entirely unparseable
+
+    # ── Step 7: diagnostic logging on first BOTSv3 chunk ─────────────────────
+    if schema == "botsv3":
+        canonical_found: list[str] = []
+        for c in _CANONICAL_COLS:
+            if c not in df.columns:
+                continue
+            _cv = df[c]
+            if isinstance(_cv, pd.DataFrame):
+                _cv = _cv.iloc[:, 0]
+            if _cv.notna().any():
+                canonical_found.append(c)
+
+        label_sample: list[str] = []
+        for _lbl_col in ("label", "sourcetype"):
+            if _lbl_col not in df.columns:
+                continue
+            _s = df[_lbl_col]
+            if isinstance(_s, pd.DataFrame):
+                _s = _s.iloc[:, 0]
+            _s = _s.dropna().astype(str).str.strip()
+            label_sample = _s[_s != ""].unique()[:10].tolist()
+            break
+
+        logger.info(
+            "normalize_chunk [botsv3]: rows=%d  columns_found=%s  label_sample=%s",
+            len(df),
+            canonical_found,
+            label_sample,
+        )
+
     return df
 
 
@@ -399,7 +788,14 @@ def time_window_correlate(df: "pd.DataFrame", window: str = "1min") -> "pd.DataF
 
         result_counts = pd.Series(0, index=df.index, dtype=int)
 
-        for ip, group in df.groupby("source_ip", dropna=True):
+        # Skip IPs that appear only once in this chunk — their result is trivially
+        # conn_per_min=1, tw_suspicious=False (the initialized default).  For
+        # high-cardinality datasets this eliminates the majority of loop iterations.
+        _ip_counts   = df["source_ip"].value_counts()
+        _multi_ips   = set(_ip_counts[_ip_counts >= 2].index)
+        _df_for_loop = df[df["source_ip"].isin(_multi_ips)] if _multi_ips else df.iloc[0:0]
+
+        for ip, group in _df_for_loop.groupby("source_ip", dropna=True):
             valid = group.dropna(subset=["_ts"])
             if valid.empty:
                 continue
@@ -444,7 +840,7 @@ _ATTACK_PATTERN = (
 )
 
 
-def tier1_filter(df: "pd.DataFrame", schema: str) -> "pd.DataFrame":
+def tier1_filter(df: "pd.DataFrame") -> "pd.DataFrame":
     """
     Heuristic pre-filter: drop clearly benign rows, keep suspicious ones.
     Adds a `severity` column based on label / port / bytes signals.
@@ -469,49 +865,46 @@ def tier1_filter(df: "pd.DataFrame", schema: str) -> "pd.DataFrame":
 
     if "bytes_out" in df.columns:
         try:
-            bout = pd.to_numeric(df["bytes_out"], errors="coerce")
+            # Use _col1 to guard against duplicate-header DataFrames (BOTSv3)
+            bout = pd.to_numeric(_col1(df, "bytes_out"), errors="coerce")
             mask |= bout > 5_000_000
         except Exception:
             pass
-
-    if schema == "botsv3" and "label" in df.columns:
-        lc = df["label"].astype(str).str.lower()
-        mask |= lc.isin({"suricata", "pan:threat", "pan:system", "stream:http"})
 
     # Time-window suspicious flag
     if "tw_suspicious" in df.columns:
         mask |= df["tw_suspicious"].fillna(False).astype(bool)
 
+    # Hard-exclude rows explicitly labeled benign regardless of port/byte signals.
+    if "label" in df.columns:
+        _lc_all = df["label"].astype(str).str.strip().str.lower()
+        mask &= ~_lc_all.isin(_BENIGN_LABELS)
+
     flagged = df[mask].copy()
     if flagged.empty:
         return flagged
 
-    def _severity(row: Any) -> str:
-        label = str(row.get("label", "")).lower()
-        if any(k in label for k in (
-            "ddos", "ransom", "heartbleed", "shellshock", "exploit",
-            "infiltrat", "dos",
-        )):
-            return "CRITICAL"
-        if any(k in label for k in (
-            "brute", "patator", "scan", "bot", "worm", "trojan",
-            "lateral", "exfil", "shell",
-        )):
-            return "HIGH"
-        try:
-            p = int(float(row.get("dest_port", 0) or 0))
-            if p in {445, 3389, 4444, 6667, 9001}:
-                return "HIGH"
-        except (ValueError, TypeError):
-            pass
-        try:
-            if float(row.get("bytes_out", 0) or 0) > 20_000_000:
-                return "HIGH"
-        except (ValueError, TypeError):
-            pass
-        return "MEDIUM"
+    _lc = flagged["label"].astype(str).str.lower() if "label" in flagged.columns else pd.Series("", index=flagged.index)
 
-    flagged["severity"] = flagged.apply(_severity, axis=1)
+    is_critical = _lc.str.contains(r"ddos|ransom|heartbleed|shellshock|exploit|infiltrat|dos", na=False, regex=True)
+    is_high_lbl = _lc.str.contains(r"brute|patator|scan|bot|worm|trojan|lateral|exfil|shell", na=False, regex=True)
+    is_high_prt = pd.Series(False, index=flagged.index)
+    if "dest_port" in flagged.columns:
+        try:
+            is_high_prt = pd.to_numeric(flagged["dest_port"], errors="coerce").isin({445, 3389, 4444, 6667, 9001})
+        except Exception:
+            pass
+    is_high_byt = pd.Series(False, index=flagged.index)
+    if "bytes_out" in flagged.columns:
+        try:
+            is_high_byt = pd.to_numeric(flagged["bytes_out"], errors="coerce") > 20_000_000
+        except Exception:
+            pass
+    _sev = pd.Series("MEDIUM", index=flagged.index, dtype="object")
+    _sev = _sev.mask(is_high_lbl | is_high_prt | is_high_byt, "HIGH")
+    _sev = _sev.mask(is_critical, "CRITICAL")
+    flagged["severity"] = _sev
+
     return flagged
 
 
@@ -540,6 +933,32 @@ def _col1(df: "pd.DataFrame", col: str, default: "pd.Series | None" = None) -> "
     return val  # type: ignore[return-value]  # already a Series
 
 
+def _coalesce_numeric(
+    df: "pd.DataFrame",
+    *cols: str,
+    default: float = 0.0,
+) -> "pd.Series":
+    """
+    Return the first column whose coerced float series has at least one
+    non-zero finite value, with nulls filled by ``default``.
+
+    Motivation: BOTSv3/Splunk exports name the same logical field differently
+    across sourcetypes (``bytes`` vs ``bytes_out`` vs ``orig_bytes``).
+    After normalize_chunk the canonical name exists but may be all-null when
+    the source alias was absent.  Trying multiple aliases prevents the
+    silent-zero condition where every feature is 0.0 and models go blind.
+    """
+    import pandas as pd  # local — safe inside executor
+
+    for col in cols:
+        if col not in df.columns:
+            continue
+        s = pd.to_numeric(_col1(df, col), errors="coerce").fillna(default)
+        if s.abs().sum() > 0:
+            return s
+    return pd.Series(default, index=df.index, dtype="float64")
+
+
 def _extract_loda_features(df: "pd.DataFrame") -> "pd.DataFrame":
     """
     Extract 4 canonical features for LODA in integer-safe units.
@@ -554,7 +973,12 @@ def _extract_loda_features(df: "pd.DataFrame") -> "pd.DataFrame":
 
     feats = pd.DataFrame(index=df.index)
 
-    bout = pd.to_numeric(_col1(df, "bytes_out"), errors="coerce").fillna(0.0)
+    # Coalesce byte aliases — BOTSv3 may use "bytes" or "orig_bytes" instead
+    # of "bytes_out"; after normalize_chunk the canonical name is present but
+    # may be all-null when the source alias was absent.
+    bout = _coalesce_numeric(
+        df, "bytes_out", "bytes", "orig_bytes", "bytes_in", "sent_bytes",
+    )
 
     if "flow_duration" in df.columns:
         fdur_us = pd.to_numeric(_col1(df, "flow_duration"), errors="coerce").fillna(0.0)
@@ -566,15 +990,35 @@ def _extract_loda_features(df: "pd.DataFrame") -> "pd.DataFrame":
         feats["flow_duration_ms"] = 0.0
 
     feats["bytes_per_sec_kb"] = bps_kb
-    feats["packet_count"] = pd.to_numeric(
-        _col1(df, "packets"), errors="coerce"
-    ).fillna(0.0).clip(lower=0.0, upper=1_000_000.0)
+    # Packet coalesce — Zeek uses "orig_pkts", some exports use "pkt_count"
+    feats["packet_count"] = _coalesce_numeric(
+        df, "packets", "pkt_count", "orig_pkts", "resp_pkts",
+    ).clip(lower=0.0, upper=1_000_000.0)
     feats["dest_port"] = pd.to_numeric(
         _col1(df, "dest_port"), errors="coerce"
     ).fillna(0.0).clip(lower=0.0, upper=65_535.0)
 
     # Reorder to match the feature indices used by the Rust guest: 0,1,2,3
-    return feats[["bytes_per_sec_kb", "packet_count", "flow_duration_ms", "dest_port"]]
+    result = feats[["bytes_per_sec_kb", "packet_count", "flow_duration_ms", "dest_port"]]
+
+    # Diagnostic: warn when the feature matrix is all-zero (model will be blind)
+    if result.abs().sum().sum() == 0:
+        logger.warning(
+            "_extract_loda_features: ALL features are ZERO for chunk of %d rows — "
+            "bytes/packets columns missing or empty.  LODA/Z-score will be blind.",
+            len(df),
+        )
+    else:
+        logger.debug(
+            "_extract_loda_features: chunk=%d rows  "
+            "bytes_per_sec_kb max=%.1f  packet_count max=%.0f  dest_port max=%.0f",
+            len(df),
+            result["bytes_per_sec_kb"].max(),
+            result["packet_count"].max(),
+            result["dest_port"].max(),
+        )
+
+    return result
 
 
 # ── Tier 1 ML: LODA (per-chunk) ───────────────────────────────────────────────
@@ -608,7 +1052,7 @@ def tier1_loda_filter(
         return df.iloc[0:0]
 
     try:
-        X   = feats.values.astype(float)
+        X   = _np.nan_to_num(feats.values.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
         rng = _np.random.default_rng(_LODA_SEED)
 
         # Generate k sparse projection vectors: w_ij ∈ {-1, 0, 1}
@@ -623,16 +1067,16 @@ def tier1_loda_filter(
             if not _np.any(P[i]):          # guarantee ≥ 1 non-zero weight
                 P[i, rng.integers(4)] = 1
 
+        # Project all n_rows × k in one BLAS dgemm call.
+        # P is (k, 4) with entries in {-1, 0, 1}; X is (n_rows, 4) float64.
+        # Z is (n_rows, k) — column i holds the projected values for projection i.
+        # This replaces _LODA_K × 4 Python for-loop iterations + per-column numpy
+        # dispatches with a single multi-threaded OpenBLAS/MKL matrix multiply.
+        Z = X @ P.T.astype(float)
+
         scores = _np.zeros(len(X))
         for i in range(_LODA_K):
-            w = P[i]
-            # Sparse projection — mirrors the Rust match-arm add/subtract
-            z = _np.zeros(len(X))
-            for j in range(4):
-                if w[j] == 1:
-                    z += X[:, j]
-                elif w[j] == -1:
-                    z -= X[:, j]
+            z = Z[:, i]
 
             edges   = _np.histogram_bin_edges(z, bins=_LODA_N_BINS)
             counts, _ = _np.histogram(z, bins=edges)
@@ -711,16 +1155,12 @@ def zscore_baseline_filter(
     if not anomalous.empty:
         anomalous["z_score_bytes"] = z_bytes_series[mask].values
         anomalous["z_score_pkts"]  = z_pkts_series[mask].values
-        # Assign severity based on z-score magnitude
-        def _zsev(row: Any) -> str:
-            zb = row.get("z_score_bytes", 0) or 0
-            zp = row.get("z_score_pkts",  0) or 0
-            if max(zb, zp) > 6.0:
-                return "CRITICAL"
-            if max(zb, zp) > 4.0:
-                return "HIGH"
-            return "MEDIUM"
-        anomalous["severity"] = anomalous.apply(_zsev, axis=1)
+        # Assign severity based on z-score magnitude — vectorized, no apply()
+        _z_max = anomalous[["z_score_bytes", "z_score_pkts"]].max(axis=1)
+        _zsev  = pd.Series("MEDIUM", index=anomalous.index, dtype="object")
+        _zsev  = _zsev.mask(_z_max > 4.0, "HIGH")
+        _zsev  = _zsev.mask(_z_max > 6.0, "CRITICAL")
+        anomalous["severity"] = _zsev
 
     logger.debug(
         "zscore_baseline_filter: %d/%d rows exceed |Z|>%.1f; baselines=%s",
@@ -754,7 +1194,7 @@ class DDSketchBaseliner:
     """
 
     def __init__(self) -> None:
-        self._sketch = _DDSketch(relative_accuracy=0.01) if _DDSKETCH_OK else None
+        self._sketch = _DDSketch(relative_accuracy=0.005) if _DDSKETCH_OK else None
         self._n      = 0
 
     def update(self, df: "pd.DataFrame") -> None:
@@ -765,16 +1205,23 @@ class DDSketchBaseliner:
         Falls back to treating bytes_out directly as a rate proxy when
         flow_duration is absent or zero (e.g. BOTSv3 raw-log rows).
         """
-        if self._sketch is None or "bytes_out" not in df.columns:
+        if self._sketch is None:
             return
 
         import pandas as pd  # local — safe inside executor
 
-        bout = pd.to_numeric(df["bytes_out"], errors="coerce").fillna(0.0)
+        # Coalesce byte aliases — BOTSv3 Splunk exports may use "bytes" or
+        # "orig_bytes" instead of the canonical "bytes_out".
+        bout = _coalesce_numeric(
+            df, "bytes_out", "bytes", "orig_bytes", "bytes_in", "sent_bytes",
+        )
+        if bout.abs().sum() == 0:
+            logger.debug("DDSketchBaseliner.update: no byte data in chunk — skipping")
+            return
 
         if "flow_duration" in df.columns:
             # CICIDS-2017: flow_duration is stored in microseconds
-            fdur_us = pd.to_numeric(df["flow_duration"], errors="coerce").fillna(0.0)
+            fdur_us = pd.to_numeric(_col1(df, "flow_duration"), errors="coerce").fillna(0.0)
             dur_s   = (fdur_us / 1_000_000.0).clip(lower=1e-6)
             bps     = (bout / dur_s).clip(lower=0.0)
         else:
@@ -887,25 +1334,40 @@ class LodaBaseliner:
         if not _NUMPY_OK or not self._buffer or self._projections is None:
             return
         try:
-            X = _np.vstack(self._buffer)
+            X = _np.nan_to_num(
+                _np.vstack(self._buffer).astype(_np.float64),
+                nan=0.0, posinf=0.0, neginf=0.0,
+            )
             if len(X) < 20:
                 logger.debug("LodaBaseliner.fit: too few rows (%d) — skipped", len(X))
+                return
+
+            # Pre-flight: if the entire feature matrix is zero the models are blind.
+            col_maxes = X.max(axis=0)
+            logger.info(
+                "LodaBaseliner.fit: shape=%s  feature maxima: "
+                "bytes_per_sec_kb=%.1f  packet_count=%.0f  "
+                "flow_duration_ms=%.0f  dest_port=%.0f",
+                X.shape,
+                col_maxes[0], col_maxes[1], col_maxes[2], col_maxes[3],
+            )
+            if col_maxes.max() == 0:
+                logger.warning(
+                    "LodaBaseliner.fit: ALL %d training rows have ZERO features — "
+                    "bytes_out / packets not extracted from this dataset. "
+                    "LODA threshold will be 0; the model is BLIND.",
+                    len(X),
+                )
                 return
 
             bin_edges_list:  list = []
             bin_scores_list: list = []
             all_scores = _np.zeros(len(X), dtype=_np.float64)
 
+            # Single BLAS dgemm replaces k×4 Python iterations — matches tier1_loda_filter.
+            Z = X @ self._projections.T.astype(float)   # (n_rows, k)
             for i in range(_LODA_K):
-                w = self._projections[i]
-
-                # Sparse projection — mirrors Rust match-arm add/subtract
-                z = _np.zeros(len(X), dtype=_np.float64)
-                for j in range(4):
-                    if w[j] == 1:
-                        z += X[:, j]
-                    elif w[j] == -1:
-                        z -= X[:, j]
+                z = Z[:, i]
 
                 # 1D histogram
                 edges     = _np.histogram_bin_edges(z, bins=_LODA_N_BINS)
@@ -1205,32 +1667,58 @@ def tier2_enrich(
     b_mean_pkts  = baselines.get("packets",   {}).get("mean", 0) if has_baselines else 0
     b_std_pkts   = baselines.get("packets",   {}).get("std",  1) if has_baselines else 1
 
-    for _, row in df.iterrows():
+    n = len(df)
+    if n == 0:
+        return alerts
 
-        def _get(col: str) -> Any:
-            v = row.get(col)
-            return None if (v is None or (isinstance(v, float) and pd.isna(v))) else v
+    # Pre-extract columns as Python lists — avoids allocating a pandas Series per row
+    def _col_list(col: str) -> list:
+        return df[col].tolist() if col in df.columns else [None] * n
 
-        label     = str(_get("label") or "").strip()
-        dst_port  = _safe_int(_get("dest_port"))
-        bytes_out = _safe_float(_get("bytes_out"))
-        protocol  = _safe_str(_get("protocol"))
+    labels     = [str(v).strip() if v is not None and not (isinstance(v, float) and math.isnan(v)) else ""
+                  for v in _col_list("label")]
+    src_ports  = _col_list("source_port")
+    dest_ports = _col_list("dest_port")
+    bytes_outs = _col_list("bytes_out")
+    protocols  = _col_list("protocol")
+    src_ips    = _col_list("source_ip")
+    dest_ips   = _col_list("dest_ip")
+    severities = _col_list("severity")
+    pkts_col   = _col_list("packets")
 
-        # Compute Z-scores per row if baselines are available
+    has_z_bytes = "z_score_bytes" in df.columns
+    has_z_pkts  = "z_score_pkts"  in df.columns
+    z_bytes_col = df["z_score_bytes"].tolist() if has_z_bytes else [None] * n
+    z_pkts_col  = df["z_score_pkts"].tolist()  if has_z_pkts  else [None] * n
+
+    # Pre-build snapshot data for raw_features — one column list per field
+    _snap_keep = ("source_ip", "source_port", "dest_ip", "dest_port", "protocol",
+                  "bytes_out", "bytes_in", "packets", "timestamp", "flow_duration")
+    snap_cols  = [c for c in _snap_keep if c in df.columns]
+    snap_lists = {c: df[c].tolist() for c in snap_cols}
+    has_tr  = "triggered_rules" in df.columns
+    tr_col  = df["triggered_rules"].tolist() if has_tr else [0] * n
+
+    for i in range(n):
+        label     = labels[i]
+        dst_port  = _safe_int(dest_ports[i])
+        bytes_out = _safe_float(bytes_outs[i])
+        protocol  = _safe_str(protocols[i])
+
         z_bytes: float | None = None
         z_pkts:  float | None = None
         if has_baselines:
-            # Use pre-attached columns if present (from zscore_baseline_filter)
-            if "z_score_bytes" in row.index:
-                z_bytes = _safe_float(_get("z_score_bytes"))
+            if has_z_bytes:
+                z_bytes = _safe_float(z_bytes_col[i])
             elif bytes_out is not None and b_std_bytes > 0:
                 z_bytes = abs(bytes_out - b_mean_bytes) / b_std_bytes
 
-            pkts = _safe_float(_get("packets"))
-            if "z_score_pkts" in row.index:
-                z_pkts = _safe_float(_get("z_score_pkts"))
-            elif pkts is not None and b_std_pkts > 0:
-                z_pkts = abs(pkts - b_mean_pkts) / b_std_pkts
+            if has_z_pkts:
+                z_pkts = _safe_float(z_pkts_col[i])
+            else:
+                pkts = _safe_float(pkts_col[i])
+                if pkts is not None and b_std_pkts > 0:
+                    z_pkts = abs(pkts - b_mean_pkts) / b_std_pkts
 
         tid, tname = derive_mitre(
             label, dst_port, bytes_out, protocol,
@@ -1238,19 +1726,39 @@ def tier2_enrich(
             z_score_pkts=z_pkts,
         )
 
+        snap: dict[str, str] = {}
+        for c in snap_cols:
+            v = snap_lists[c][i]
+            if v is None:
+                continue
+            try:
+                if isinstance(v, float) and math.isnan(v):
+                    continue
+            except Exception:
+                pass
+            snap[c] = str(v)[:64]
+        if has_tr:
+            snap["triggered_rules"] = str(int(tr_col[i]))
+        raw_features = json.dumps(snap)[:512]
+
         alerts.append({
-            "source_ip":       _safe_str(_get("source_ip")),
-            "dest_ip":         _safe_str(_get("dest_ip")),
+            "source_ip":       _safe_str(src_ips[i]),
+            "source_port":     _safe_int(src_ports[i]),
+            "dest_ip":         _safe_str(dest_ips[i]),
             "dest_port":       dst_port,
             "protocol":        protocol,
             "label":           label or None,
-            "severity":        str(_get("severity") or "MEDIUM"),
+            "severity":        (_safe_str(severities[i]) or "MEDIUM")
+                               if (_safe_str(severities[i]) or "MEDIUM")
+                               in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")
+                               else "MEDIUM",
             "mitre_technique": tid,
             "mitre_name":      tname,
             "bytes_total":     bytes_out,
             "z_score_bytes":   z_bytes,
             "z_score_pkts":    z_pkts,
-            "raw_features":    _row_snapshot(row),
+            "raw_features":    raw_features,
+            "triggered_rules": int(tr_col[i]) if has_tr else 0,
         })
 
     return alerts
@@ -1271,8 +1779,38 @@ def run_tier1_combined(
     """
     import pandas as pd
 
+    # ── Phase 1: First-batch diagnostic logging ───────────────────────────────
+    if schema not in _DIAG_FIRST_BATCH:
+        _DIAG_FIRST_BATCH.add(schema)
+        _diag_cols   = list(df.columns)
+        _num_feats   = ["bytes_out", "bytes_in", "packets", "dest_port", "src_port", "flow_duration"]
+        _present_num = [c for c in _num_feats if c in df.columns]
+        logger.info(
+            "run_tier1_combined [%s] FIRST-BATCH DIAGNOSTIC — "
+            "chunk=%d rows  columns(%d)=%s",
+            schema, len(df), len(_diag_cols), _diag_cols,
+        )
+        if _present_num:
+            try:
+                logger.info(
+                    "run_tier1_combined [%s] numerical features (first 5 rows):\n%s",
+                    schema,
+                    df[_present_num].head(5).to_string(),
+                )
+            except Exception as _de:
+                logger.info(
+                    "run_tier1_combined [%s] could not log numerical features: %s",
+                    schema, _de,
+                )
+        else:
+            logger.warning(
+                "run_tier1_combined [%s] BLIND — none of %s present; "
+                "LODA/Z-score will produce no signals.",
+                schema, _num_feats,
+            )
+
     # Mode A: heuristic rules (always runs)
-    heuristic = tier1_filter(df, schema)
+    heuristic = tier1_filter(df)
 
     # Mode B: LODA per-chunk anomaly detection (requires numpy)
     ml_flags = tier1_loda_filter(df, contamination=0.05)
@@ -1295,14 +1833,23 @@ def run_tier1_combined(
     # Severity: take the maximum across all modes that flagged the row
     sev_order = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0, "INFO": -1}
 
+    _VALID_SEV = frozenset(sev_order)
+
+    def _coerce_sev(raw: object) -> str:
+        """Return raw if it is a known severity string, else 'MEDIUM'.
+        Guards against BOTSv3/Splunk frames that carry a raw 'severity'
+        column whose cells are float NaN or non-standard strings."""
+        s = str(raw) if raw is not None and not (isinstance(raw, float) and math.isnan(raw)) else "MEDIUM"
+        return s if s in _VALID_SEV else "MEDIUM"
+
     def _best_sev(idx: int) -> str:
         candidates = []
         if idx in heuristic.index:
-            candidates.append(heuristic.at[idx, "severity"] if "severity" in heuristic.columns else "MEDIUM")
+            candidates.append(_coerce_sev(heuristic.at[idx, "severity"] if "severity" in heuristic.columns else "MEDIUM"))
         if idx in ml_flags.index:
-            candidates.append(ml_flags.at[idx, "severity"] if "severity" in ml_flags.columns else "MEDIUM")
+            candidates.append(_coerce_sev(ml_flags.at[idx, "severity"] if "severity" in ml_flags.columns else "MEDIUM"))
         if idx in z_flags.index:
-            candidates.append(z_flags.at[idx, "severity"] if "severity" in z_flags.columns else "MEDIUM")
+            candidates.append(_coerce_sev(z_flags.at[idx, "severity"] if "severity" in z_flags.columns else "MEDIUM"))
         return max(candidates, key=lambda s: sev_order.get(s, 0)) if candidates else "MEDIUM"
 
     combined["severity"] = [_best_sev(i) for i in combined.index]
@@ -1313,6 +1860,50 @@ def run_tier1_combined(
         combined.loc[common, "z_score_bytes"] = z_flags.loc[common, "z_score_bytes"]
         combined.loc[common, "z_score_pkts"]  = z_flags.loc[common, "z_score_pkts"]
 
+    # Compute 7-bit triggered_rules bitmask — see AiIncidentReview.tsx RULE_BIT_LABELS
+    rules = pd.Series(0, index=combined.index, dtype=int)
+
+    # Bit 1 — LODA anomaly
+    if not ml_flags.empty:
+        loda_idx = combined.index.intersection(ml_flags.index)
+        rules.loc[loda_idx] |= (1 << 1)
+
+    # Bits 2+6 — time-window correlation (CUSUM proxy + Time-Win)
+    if "tw_suspicious" in combined.columns:
+        tw = combined["tw_suspicious"].fillna(False).astype(bool)
+        rules |= tw.astype(int) * ((1 << 2) | (1 << 6))
+
+    # Bit 3 — suspicious destination port  (<< 3 == * 8)
+    if "dest_port" in combined.columns:
+        try:
+            _ports = pd.to_numeric(combined["dest_port"], errors="coerce")
+            rules |= _ports.isin(_SUSPICIOUS_PORTS).astype(int) * 8
+        except Exception:
+            pass
+
+    # Bit 4 — high-volume transfer  (<< 4 == * 16)
+    if "bytes_out" in combined.columns:
+        try:
+            _bout = pd.to_numeric(combined["bytes_out"], errors="coerce").fillna(0)
+            rules |= (_bout > 5_000_000).astype(int) * 16
+        except Exception:
+            pass
+
+    # Bit 5 — label keyword match  (<< 5 == * 32)
+    if "label" in combined.columns:
+        _lkw = combined["label"].astype(str).str.lower()
+        rules |= _lkw.str.contains(_ATTACK_PATTERN, na=False, regex=True).astype(int) * 32
+
+    # Bit 0 — volumetric DDSketch proxy  (<< 0 == * 1, i.e. no shift needed)
+    if "z_score_bytes" in combined.columns:
+        try:
+            _zb = pd.to_numeric(combined["z_score_bytes"], errors="coerce").fillna(0)
+            rules |= (_zb > 3.0).astype(int)
+        except Exception:
+            pass
+
+    combined["triggered_rules"] = rules
+
     return combined, baselines
 
 
@@ -1321,8 +1912,15 @@ def run_tier1_combined(
 def _safe_str(v: Any) -> str | None:
     if v is None:
         return None
+    # pd.NA survives astype(object) and is not None — catch it explicitly.
+    try:
+        import pandas as _pd
+        if _pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
     s = str(v).strip()
-    return None if s.lower() in ("nan", "none", "null", "") else s
+    return None if s.lower() in ("nan", "none", "null", "<na>", "") else s
 
 
 def _safe_int(v: Any) -> int | None:
@@ -1361,7 +1959,10 @@ def _row_snapshot(row: Any) -> str:
 
 _PIPELINE_DDL = """
 PRAGMA journal_mode=WAL;
-PRAGMA synchronous=NORMAL;
+PRAGMA synchronous=OFF;
+PRAGMA cache_size=100000;
+PRAGMA temp_store=MEMORY;
+PRAGMA mmap_size=536870912;
 PRAGMA busy_timeout=30000;
 
 CREATE TABLE IF NOT EXISTS telemetry_alerts (
@@ -1370,6 +1971,7 @@ CREATE TABLE IF NOT EXISTS telemetry_alerts (
     ingested_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     dataset_type    TEXT    NOT NULL,
     source_ip       TEXT,
+    src_port        INTEGER,
     dest_ip         TEXT,
     dest_port       INTEGER,
     protocol        TEXT,
@@ -1381,7 +1983,8 @@ CREATE TABLE IF NOT EXISTS telemetry_alerts (
     z_score_bytes   REAL,
     z_score_pkts    REAL,
     raw_features    TEXT,
-    chain_hash      TEXT
+    chain_hash      TEXT,
+    zk_status       TEXT    DEFAULT 'pending'
 );
 CREATE INDEX IF NOT EXISTS idx_ta_session   ON telemetry_alerts(session_id);
 CREATE INDEX IF NOT EXISTS idx_ta_severity  ON telemetry_alerts(severity);
@@ -1451,6 +2054,8 @@ def ensure_pipeline_tables(db_path: str) -> None:
                 "ALTER TABLE telemetry_alerts ADD COLUMN z_score_pkts    REAL",
                 "ALTER TABLE telemetry_alerts ADD COLUMN raw_features     TEXT",
                 "ALTER TABLE telemetry_alerts ADD COLUMN chain_hash       TEXT",
+                "ALTER TABLE telemetry_alerts ADD COLUMN src_port         INTEGER",
+                "ALTER TABLE telemetry_alerts ADD COLUMN zk_status        TEXT DEFAULT 'pending'",
             ]
             for _stmt in _ta_migrations:
                 try:
@@ -1517,30 +2122,44 @@ def insert_alerts_batch(
     rows = [
         (
             session_id, now, dataset_type,
-            a.get("source_ip"), a.get("dest_ip"), a.get("dest_port"),
+            a.get("source_ip"), a.get("source_port"), a.get("dest_ip"), a.get("dest_port"),
             a.get("protocol"), a.get("label"), a.get("severity", "HIGH"),
             a.get("mitre_technique"), a.get("mitre_name"),
             a.get("bytes_total"), a.get("z_score_bytes"), a.get("z_score_pkts"),
-            a.get("raw_features"), _input_hash(a),
+            a.get("raw_features"), _input_hash(a), a.get("triggered_rules", 0),
         )
         for a in alerts
     ]
     with sqlite3.connect(db_path, timeout=30.0) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA synchronous=OFF")       # skip fsync — 2-4× write speedup
+        conn.execute("PRAGMA cache_size=100000")     # 400 MB page cache in 4 KB pages
+        conn.execute("PRAGMA temp_store=MEMORY")     # temp indices stay in RAM
+        conn.execute("PRAGMA mmap_size=536870912")   # 512 MB memory-mapped I/O
+        conn.execute("PRAGMA page_size=4096")        # 4 KB pages (default, explicit for clarity)
         conn.executemany(
             """
             INSERT INTO telemetry_alerts
-              (session_id, ingested_at, dataset_type, source_ip, dest_ip, dest_port,
+              (session_id, ingested_at, dataset_type, source_ip, src_port, dest_ip, dest_port,
                protocol, label, severity, mitre_technique, mitre_name,
-               bytes_total, z_score_bytes, z_score_pkts, raw_features, chain_hash)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               bytes_total, z_score_bytes, z_score_pkts, raw_features, chain_hash, triggered_rules)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             rows,
         )
 
 
 # ── CISO Summary Metrics ──────────────────────────────────────────────────────
+
+_RULE_NAMES = ["DDSketch", "LODA", "CUSUM", "Port", "Volume", "Label-KW", "Time-Win"]
+_RULE_PRIORITY = [1, 0, 3, 4, 5, 2, 6]  # LODA first, then DDSketch, Port, Volume, Label, CUSUM, Time-Win
+
+def _dominant_rule(bitmask: int) -> str:
+    for bit in _RULE_PRIORITY:
+        if bitmask & (1 << bit):
+            return _RULE_NAMES[bit]
+    return "Heuristic"
+
 
 def compute_ciso_summary(db_path: str, session_id: str) -> dict:
     """Compute analyst-value metrics from a completed pipeline session."""
@@ -1560,15 +2179,27 @@ def compute_ciso_summary(db_path: str, session_id: str) -> dict:
             top_techniques = conn.execute(
                 "SELECT mitre_technique, mitre_name, COUNT(*) AS cnt "
                 "FROM telemetry_alerts WHERE session_id = ? "
+                "AND mitre_technique IS NOT NULL "
                 "GROUP BY mitre_technique ORDER BY cnt DESC LIMIT 8",
                 (session_id,),
             ).fetchall()
 
             top_src_ips = conn.execute(
-                "SELECT source_ip, COUNT(*) AS cnt "
-                "FROM telemetry_alerts "
-                "WHERE session_id = ? AND source_ip IS NOT NULL "
-                "GROUP BY source_ip ORDER BY cnt DESC LIMIT 10",
+                """
+                SELECT source_ip,
+                       COUNT(*) AS cnt,
+                       MAX(triggered_rules) AS top_rules
+                FROM telemetry_alerts
+                WHERE session_id = ?
+                  AND source_ip IS NOT NULL
+                  AND LOWER(COALESCE(label, '')) NOT IN (
+                      'benign', 'normal', 'background', 'legitimate', 'unknown'
+                  )
+                  AND severity IN ('CRITICAL', 'HIGH', 'MEDIUM')
+                GROUP BY source_ip
+                ORDER BY cnt DESC
+                LIMIT 10
+                """,
                 (session_id,),
             ).fetchall()
 
@@ -1611,7 +2242,7 @@ def compute_ciso_summary(db_path: str, session_id: str) -> dict:
         "total_alerts":        total,
         "by_severity":         by_sev,
         "top_techniques":      [{"id": t[0], "name": t[1], "count": t[2]} for t in top_techniques],
-        "top_attacker_ips":    [{"ip": r[0], "count": r[1]} for r in top_src_ips],
+        "top_attacker_ips":    [{"ip": r[0], "count": r[1], "dominant_rule": _dominant_rule(r[2] or 0)} for r in top_src_ips],
         "top_labels":          [{"label": r[0], "count": r[1]} for r in top_labels],
         "analyst_hours_saved": analyst_hours,
         "cost_avoided_usd":    cost_avoided,

@@ -59,6 +59,11 @@ async def generate_proof(record_id: int):
     if not bincode_data:
         raise HTTPException(400, "Record has no bincode_raw — re-ingest with the replay script")
 
+    # ZK Bypass
+    if os.getenv("DEV_MODE_ZK_BYPASS", "False").lower() == "true":
+        logger.warning("ZK Bypass active: mocking STARK proof for edge record %d", record_id)
+        return {"success": True, "receipt_b64": "MOCK_DEV_RECEIPT_12345"}
+
     # Write to temp file, pass to verifier, always clean up
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".bin", prefix="omniwatch_edge_")
     proc = None

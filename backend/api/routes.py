@@ -389,13 +389,29 @@ async def cicids_stats(session_id: str = None):
                     "WHERE session_id = ? GROUP BY label ORDER BY COUNT(*) DESC",
                     (session_id,),
                 ).fetchall())
+                # Exclude explicitly-benign rows from severity counts so that
+                # LODA/Z-score anomaly signals on BENIGN-labeled flows do not
+                # inflate CRITICAL/HIGH KPIs.  total stays as raw flow count.
                 by_severity = dict(conn.execute(
                     "SELECT severity, COUNT(*) FROM telemetry_alerts "
-                    "WHERE session_id = ? GROUP BY severity",
+                    "WHERE session_id = ? "
+                    "AND LOWER(COALESCE(label, '')) NOT IN "
+                    "('benign', 'normal', 'background', 'legitimate', 'unknown') "
+                    "GROUP BY severity",
                     (session_id,),
                 ).fetchall())
+                rp_row = conn.execute(
+                    "SELECT rows_processed FROM pipeline_sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                rows_processed = rp_row[0] if rp_row else total
                 conn.close()
-                return {"total": total, "by_label": by_label, "by_severity": by_severity}
+                return {
+                    "total":          total,
+                    "by_label":       by_label,
+                    "by_severity":    by_severity,
+                    "rows_processed": rows_processed,
+                }
             except Exception as exc:
                 logger.error("cicids_stats (session) DB error:\n%s", exc)
                 raise
@@ -570,6 +586,9 @@ async def system_reset():
             "raw_events",
             "firewall_status",
             "spent_receipts",
+            # Pipeline tables — clear stale sessions and alerts from failed runs
+            "telemetry_alerts",
+            "pipeline_sessions",
         ):
             try:
                 cur.execute(f"DELETE FROM {table}")   # noqa: S608 — table names are hardcoded
@@ -586,42 +605,129 @@ async def system_reset():
         raise HTTPException(status_code=500, detail=f"Reset failed: {exc}")
 
 
-# ── Hourly event distribution ─────────────────────────────────────────────────
+# ── Temporal event distribution (dynamic window) ──────────────────────────────
 
 @router.get("/api/stats/hourly-distribution")
-async def hourly_distribution():
+async def hourly_distribution(window: str = "24h", session_id: str = None):
     """
-    Returns 24-hour event distribution from real ingested data.
-    Used by the Timeline chart — replaces the synthetic bell-curve formula.
+    Returns severity-stratified event distribution for the Threat Activity chart.
+
+    Query params:
+      window     — "1h" | "24h" | "7d" | "all" (default: "24h")
+      session_id — when supplied, scopes query to that pipeline session only
+
+    Granularity (relative to latest data point in the selected source):
+      1h  → per-minute buckets  (up to 60 points)
+      24h → per-hour buckets    (up to 24 points, last 24 h of data)
+      7d  → per-day buckets     (up to 7 points)
+      all → per-day buckets     (unbounded)
+
+    Response columns per bucket:
+      bucket  — label string (HH:MM / HH:00 / YYYY-MM-DD)
+      total   — all events in bucket
+      threats — CRITICAL + HIGH severity
+      medium  — MEDIUM severity
+      benign  — INFO severity or BENIGN label (clean traffic)
     """
     from db.database import get_db_path
-    import sqlite3
 
-    db = get_db_path()
+    db   = get_db_path()
+    win  = (window or "24h").lower().strip()
+
+    # ── Build source CTE (session-scoped or global) ───────────────────────
+    # When session_id is provided query only that pipeline session so the
+    # chart reflects the active upload rather than mixing with legacy tables.
+    if session_id:
+        source_sql   = "SELECT ingested_at, severity, label FROM telemetry_alerts WHERE session_id = ?"
+        source_params: list = [session_id]
+    else:
+        source_sql   = (
+            "SELECT ingested_at, severity, label FROM cicids_events"
+            " UNION ALL "
+            "SELECT ingested_at, severity, label FROM telemetry_alerts"
+        )
+        source_params = []
+
+    # ── Resolve window → SQL filter + grouping key ────────────────────────
+    # All time windows reference MAX(ingested_at) in the selected source so
+    # the chart always shows the most recent slice of available data rather
+    # than defaulting to wall-clock "now" (which would be empty for uploads).
+    max_subquery = f"SELECT MAX(ingested_at) FROM ({source_sql})"
+
+    if win == "1h":
+        time_filter = f"AND ingested_at >= datetime(({max_subquery}), '-1 hour')"
+        bucket_expr = "substr(ingested_at, 12, 5)"       # HH:MM
+        order_expr  = "bucket"
+    elif win == "7d":
+        time_filter = f"AND ingested_at >= datetime(({max_subquery}), '-7 days')"
+        bucket_expr = "substr(ingested_at, 1, 10)"       # YYYY-MM-DD
+        order_expr  = "bucket"
+    elif win == "all":
+        time_filter = ""
+        bucket_expr = "substr(ingested_at, 1, 10)"
+        order_expr  = "bucket"
+    else:  # 24h — last 24 hours relative to the latest data point
+        time_filter = f"AND ingested_at >= datetime(({max_subquery}), '-1 day')"
+        bucket_expr = "CAST(substr(ingested_at, 12, 2) AS INTEGER)"
+        order_expr  = "bucket"
+
+    # params: source_sql appears twice (outer FROM + max_subquery inside time_filter)
+    subq_params = source_params[:]
+    if time_filter:
+        all_params = source_params + subq_params
+    else:
+        all_params = source_params
+
     try:
         conn = sqlite3.connect(db, timeout=5.0)
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT
-                CAST(strftime('%H', ingested_at) AS INTEGER) AS hour,
+                {bucket_expr} AS bucket,
                 COUNT(*) AS total,
-                SUM(CASE WHEN severity IN ('CRITICAL', 'HIGH') THEN 1 ELSE 0 END) AS threats,
-                SUM(CASE WHEN label = 'BENIGN' OR severity = 'INFO' THEN 1 ELSE 0 END) AS benign
-            FROM cicids_events
+                SUM(CASE WHEN severity IN ('CRITICAL', 'HIGH')
+                         THEN 1 ELSE 0 END) AS threats,
+                SUM(CASE WHEN severity = 'MEDIUM'
+                         THEN 1 ELSE 0 END) AS medium,
+                SUM(CASE WHEN severity = 'INFO' OR LOWER(COALESCE(label,'')) IN (
+                         'benign', 'normal', 'background', 'legitimate')
+                         THEN 1 ELSE 0 END) AS benign
+            FROM ({source_sql}) AS src
             WHERE ingested_at IS NOT NULL
-            GROUP BY hour
-            ORDER BY hour
-        """).fetchall()
+              AND length(ingested_at) >= 13
+              {time_filter}
+            GROUP BY bucket
+            ORDER BY {order_expr}
+        """, all_params).fetchall()
         conn.close()
-    except Exception:
+    except Exception as exc:
+        logger.warning("hourly_distribution query failed: %s", exc)
         rows = []
 
-    # Build a 0–23 hour array, filling missing hours with zeros
-    hour_map = {r[0]: {"total": r[1], "threats": r[2] or 0, "benign": r[3] or 0}
-                for r in rows}
-    return [
-        {"hour": h, **hour_map.get(h, {"total": 0, "threats": 0, "benign": 0})}
-        for h in range(24)
-    ]
+    # ── Build response ────────────────────────────────────────────────────
+    def _row(r) -> dict:
+        return {
+            "bucket":  str(r[0]),
+            "total":   r[1] or 0,
+            "threats": r[2] or 0,
+            "medium":  r[3] or 0,
+            "benign":  r[4] or 0,
+        }
+
+    if win == "24h":
+        # Pad the full 0–23 hour range so the chart always renders 24 bars.
+        hour_map = {r[0]: _row(r) for r in rows}
+        return [
+            {
+                "bucket":  f"{h:02d}:00",
+                "total":   hour_map.get(h, {}).get("total",   0),
+                "threats": hour_map.get(h, {}).get("threats", 0),
+                "medium":  hour_map.get(h, {}).get("medium",  0),
+                "benign":  hour_map.get(h, {}).get("benign",  0),
+            }
+            for h in range(24)
+        ]
+    else:
+        return [_row(r) for r in rows]
 
 
 # ── Config / API key status ───────────────────────────────────────────────────
@@ -691,6 +797,9 @@ def _serialise_alert(alert) -> dict:
         "category":            alert.category,
         "confidence":          alert.confidence,
         "source_ip":           alert.source_ip,
+        "dest_ip":             getattr(alert, "dest_ip",    None),
+        "dest_port":           getattr(alert, "dest_port",  None),
+        "chain_hash":          getattr(alert, "chain_hash", None),
         "affected_asset":      alert.affected_asset,
         "mitre_techniques":    _safe_json(alert.mitre_techniques),
         "raw_log_excerpt":     alert.raw_log_excerpt,

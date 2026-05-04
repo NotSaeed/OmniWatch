@@ -156,38 +156,43 @@ async def _abc_auto_prove(
         return
 
     # 1. Generate STARK proof
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".bin", prefix="omniwatch_abc_")
-    try:
-        os.write(tmp_fd, bincode_raw)
-        os.close(tmp_fd)
-        proc = await asyncio.create_subprocess_exec(
-            str(_VERIFIER_BIN), "--prove-file", tmp_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120.0)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()   # reap zombie — prevents fd/PID leaks
-            logger.error("ABC: prover timed out for record %d", record_id)
-            return
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-
-    if proc.returncode != 0:
-        logger.error("ABC: prover failed for record %d: %s", record_id,
-                     stderr.decode(errors="replace").strip())
-        return
-
     receipt_b64: str | None = None
-    for line in stdout.decode(errors="replace").splitlines():
-        if line.startswith("[RECEIPT] "):
-            receipt_b64 = line[len("[RECEIPT] "):].strip()
-            break
+    if os.getenv("DEV_MODE_ZK_BYPASS", "False").lower() == "true":
+        logger.warning("ABC ZK Bypass active: mocking STARK proof for record %d", record_id)
+        receipt_b64 = "MOCK_DEV_RECEIPT_12345"
+    else:
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".bin", prefix="omniwatch_abc_")
+        try:
+            os.write(tmp_fd, bincode_raw)
+            os.close(tmp_fd)
+            proc = await asyncio.create_subprocess_exec(
+                str(_VERIFIER_BIN), "--prove-file", tmp_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()   # reap zombie — prevents fd/PID leaks
+                logger.error("ABC: prover timed out for record %d", record_id)
+                return
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+        if proc.returncode != 0:
+            logger.error("ABC: prover failed for record %d: %s", record_id,
+                         stderr.decode(errors="replace").strip())
+            return
+
+        for line in stdout.decode(errors="replace").splitlines():
+            if line.startswith("[RECEIPT] "):
+                receipt_b64 = line[len("[RECEIPT] "):].strip()
+                break
+
 
     if not receipt_b64:
         logger.error("ABC: no [RECEIPT] line for record %d", record_id)

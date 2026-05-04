@@ -23,7 +23,7 @@ export function DatasetSourceBreakdown() {
   });
 
   const chartData = Object.entries(data?.by_sourcetype ?? {})
-    .sort((a, b) => b[1] - a[1])
+    .sort((a: any, b: any) => b[1] - a[1])
     .map(([name, count]) => ({ name, count }));
 
   if (chartData.length === 0) {

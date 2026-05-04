@@ -40,6 +40,9 @@ class Alert(Base):
     category:            Mapped[str]        = mapped_column(String, index=True)
     confidence:          Mapped[float]      = mapped_column(Float)
     source_ip:           Mapped[str | None] = mapped_column(String, nullable=True)
+    dest_ip:             Mapped[str | None] = mapped_column(String, nullable=True)
+    dest_port:           Mapped[int | None] = mapped_column(Integer, nullable=True)
+    chain_hash:          Mapped[str | None] = mapped_column(String, nullable=True)
     affected_asset:      Mapped[str | None] = mapped_column(String, nullable=True)
     mitre_techniques:    Mapped[str]        = mapped_column(Text, default="[]")   # JSON list
     raw_log_excerpt:     Mapped[str]        = mapped_column(Text)

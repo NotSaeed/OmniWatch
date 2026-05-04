@@ -77,13 +77,6 @@ function stageIndex(s: Stage): number {
   return STAGE_ORDER.indexOf(s);
 }
 
-const SEV_COLOR: Record<string, string> = {
-  CRITICAL: "#e84d4d",
-  HIGH:     "#f4a926",
-  MEDIUM:   "#4e9af1",
-  LOW:      "#72c811",
-  INFO:     "#6b6e80",
-};
 
 // ── Error extraction ──────────────────────────────────────────────────────────
 
@@ -344,9 +337,8 @@ export function TelemetryUploader({ onClose, pipelineWsMessage, onComplete }: Pr
     });
   }
 
-  const ciso    = session?.ciso_summary;
-  const rows    = pollRows  || session?.rows_processed  || 0;
-  const alerts  = pollAlerts || session?.alerts_found || 0;
+  const rows   = pollRows   || session?.rows_processed || 0;
+  const alerts = pollAlerts || session?.alerts_found   || 0;
 
   const fullErrorText = [
     errorMsg,
@@ -396,9 +388,6 @@ export function TelemetryUploader({ onClose, pipelineWsMessage, onComplete }: Pr
               <div>
                 <p className="text-sm font-semibold text-white leading-none">
                   {stage === "error" ? "Upload Error" : "Upload Telemetry Dataset"}
-                </p>
-                <p className="text-[10px] mt-0.5" style={{ color: "#4d5060" }}>
-                  BOTSv3 · CICIDS-2017 · Zeek · Generic CSV
                 </p>
               </div>
             </div>
@@ -558,55 +547,47 @@ export function TelemetryUploader({ onClose, pipelineWsMessage, onComplete }: Pr
               </div>
             )}
 
-            {/* ── Complete: CISO results ────────────────────────────────── */}
-            {stage === "complete" && ciso && (
+            {/* ── Complete: Operational summary ─────────────────────────── */}
+            {stage === "complete" && (
               <div className="space-y-3 pt-1">
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { label: "Alerts Found",      value: ciso.total_alerts.toLocaleString(),                                                        color: "#e84d4d" },
-                    { label: "Analyst Hrs Saved", value: `${ciso.analyst_hours_saved}h`,                                                            color: "#72c811" },
-                    { label: "Cost Avoided",      value: ciso.cost_avoided_usd >= 1000 ? `$${(ciso.cost_avoided_usd/1000).toFixed(0)}K` : `$${ciso.cost_avoided_usd}`, color: "#4e9af1" },
-                  ].map(k => (
-                    <div key={k.label} className="rounded-lg px-3 py-2.5" style={{ background: "#0d0d10", border: "1px solid #1a1a1f" }}>
-                      <p className="text-[9px] uppercase tracking-widest font-semibold" style={{ color: "#4d5060" }}>{k.label}</p>
-                      <p className="text-lg font-bold mt-0.5 font-mono leading-none" style={{ color: k.color }}>{k.value}</p>
-                    </div>
-                  ))}
+
+                {/* Primary triage metrics */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-lg px-3 py-3" style={{ background: "#0d0d10", border: "1px solid #1a1a1f" }}>
+                    <p className="text-[9px] uppercase tracking-widest font-semibold" style={{ color: "#4d5060" }}>Rows Analyzed</p>
+                    <p className="text-2xl font-bold mt-1 font-mono leading-none tabular-nums" style={{ color: "#4e9af1" }}>
+                      {rows.toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="rounded-lg px-3 py-3" style={{ background: "#0d0d10", border: "1px solid #1a1a1f" }}>
+                    <p className="text-[9px] uppercase tracking-widest font-semibold" style={{ color: "#4d5060" }}>Alerts Flagged</p>
+                    <p className="text-2xl font-bold mt-1 font-mono leading-none tabular-nums" style={{ color: alerts > 0 ? "#e84d4d" : "#4d5060" }}>
+                      {alerts.toLocaleString()}
+                    </p>
+                  </div>
                 </div>
 
-                {Object.keys(ciso.by_severity).length > 0 && (
-                  <div className="rounded-lg p-3" style={{ background: "#0d0d10", border: "1px solid #1a1a1f" }}>
-                    <p className="text-[9px] uppercase tracking-widest font-semibold mb-2" style={{ color: "#4d5060" }}>Severity Breakdown</p>
-                    <div className="flex gap-3 flex-wrap">
-                      {Object.entries(ciso.by_severity).map(([sev, cnt]) => (
-                        <span key={sev} className="text-[11px] font-mono tabular-nums font-semibold" style={{ color: SEV_COLOR[sev] ?? "#6b6e80" }}>
-                          {sev} <span className="font-bold">{(cnt as number).toLocaleString()}</span>
-                        </span>
-                      ))}
-                    </div>
+                {/* Session identity */}
+                <div className="rounded-lg px-3 py-2.5 space-y-1.5" style={{ background: "#0d0d10", border: "1px solid #1a1a1f" }}>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-[9px] uppercase tracking-widest font-semibold shrink-0" style={{ color: "#4d5060" }}>Dataset</span>
+                    <span className="text-[10px] font-mono truncate text-right" style={{ color: "#c5c7d4" }}>
+                      {uploadedFilename || session?.filename || "—"}
+                    </span>
                   </div>
-                )}
-
-                {ciso.top_techniques.length > 0 && (
-                  <div className="rounded-lg p-3" style={{ background: "#0d0d10", border: "1px solid #1a1a1f" }}>
-                    <p className="text-[9px] uppercase tracking-widest font-semibold mb-2" style={{ color: "#4d5060" }}>Top MITRE ATT&CK Techniques</p>
-                    <div className="space-y-1.5">
-                      {ciso.top_techniques.slice(0, 5).map(t => {
-                        const max = ciso.top_techniques[0]?.count || 1;
-                        return (
-                          <div key={t.id} className="flex items-center gap-2">
-                            <span className="text-[9px] font-mono shrink-0 w-16" style={{ color: "#d946ef" }}>{t.id}</span>
-                            <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: "#1a1a1f" }}>
-                              <div className="h-full rounded-full" style={{ width: `${Math.round((t.count/max)*100)}%`, background: "linear-gradient(90deg,#d946ef,#8b5cf6)", opacity: 0.8 }} />
-                            </div>
-                            <span className="text-[9px] font-mono tabular-nums shrink-0" style={{ color: "#6b6e80" }}>{t.count.toLocaleString()}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-[9px] uppercase tracking-widest font-semibold shrink-0" style={{ color: "#4d5060" }}>Session ID</span>
+                    <span className="text-[9px] font-mono" style={{ color: "#6b6e80" }}>{sessionId ?? "—"}</span>
                   </div>
-                )}
+                  {session?.dataset_type && (
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[9px] uppercase tracking-widest font-semibold shrink-0" style={{ color: "#4d5060" }}>Type</span>
+                      <span className="text-[9px] font-mono" style={{ color: "#6b6e80" }}>{session.dataset_type.toUpperCase()}</span>
+                    </div>
+                  )}
+                </div>
 
+                {/* Cryptographic chain receipt */}
                 {session?.chain_tip_hash && (
                   <div className="rounded-lg px-3 py-2.5 flex items-center gap-2" style={{ background: "rgba(114,200,17,0.06)", border: "1px solid rgba(114,200,17,0.20)" }}>
                     <Lock className="w-3.5 h-3.5 shrink-0" style={{ color: "#72c811" }} />
@@ -620,27 +601,15 @@ export function TelemetryUploader({ onClose, pipelineWsMessage, onComplete }: Pr
                   </div>
                 )}
 
-                <p className="text-[10px] font-mono text-center" style={{ color: "#3d3f4a" }}>
-                  {session?.dataset_type?.toUpperCase()} · {rows.toLocaleString()} rows · session {sessionId?.slice(0, 8)}
-                </p>
-              </div>
-            )}
-
-            {/* Complete but CISO summary still loading */}
-            {stage === "complete" && !ciso && (
-              <div className="flex items-center justify-center gap-2 py-4" style={{ color: "#4d5060" }}>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span className="text-xs">Finalising metrics…</span>
-              </div>
-            )}
-
-            {/* No anomalies warning */}
-            {stage === "complete" && ciso && ciso.total_alerts === 0 && (
-              <div className="rounded-xl p-3 flex items-start gap-2" style={{ background: "rgba(244,169,38,0.08)", border: "1px solid rgba(244,169,38,0.22)" }}>
-                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: "#f4a926" }} />
-                <p className="text-[11px]" style={{ color: "#f4a926" }}>
-                  No anomalies detected. The file may be all-benign traffic or headers weren't recognised — try checking the schema.
-                </p>
+                {/* Zero-alert warning */}
+                {alerts === 0 && (
+                  <div className="rounded-xl p-3 flex items-start gap-2" style={{ background: "rgba(244,169,38,0.08)", border: "1px solid rgba(244,169,38,0.22)" }}>
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: "#f4a926" }} />
+                    <p className="text-[11px]" style={{ color: "#f4a926" }}>
+                      No anomalies detected. The file may be all-benign traffic or headers weren't recognised — try checking the schema.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -694,10 +663,12 @@ export function TelemetryUploader({ onClose, pipelineWsMessage, onComplete }: Pr
                 </button>
                 <button
                   onClick={onClose}
-                  className="px-4 py-1.5 rounded text-xs font-semibold transition-all active:scale-95"
-                  style={{ background: "rgba(114,200,17,0.12)", border: "1px solid rgba(114,200,17,0.35)", color: "#72c811" }}
+                  disabled={alerts === 0}
+                  className="px-5 py-1.5 rounded text-xs font-bold tracking-wide transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+                  style={{ background: alerts > 0 ? "rgba(232,77,77,0.15)" : "rgba(255,255,255,0.04)", border: `1px solid ${alerts > 0 ? "rgba(232,77,77,0.40)" : "#2a2b32"}`, color: alerts > 0 ? "#e84d4d" : "#6b6e80" }}
                 >
-                  View Dashboard
+                  Begin Triage
+                  <ChevronRight className="w-3.5 h-3.5" />
                 </button>
               </>
             )}

@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import type { CicidsStats, DashboardStats, Severity } from "../lib/types";
 import { SEVERITY_COLORS } from "../lib/utils";
@@ -11,30 +12,27 @@ interface Props {
 }
 
 export function SeverityChart({ stats, cicidsStats, botsTactics }: Props) {
-  // Prefer AI alert counts; fall back to CIC-IDS severity counts, then BOTS tactics
-  const aiTotal = SEVERITIES.reduce((s, k) => s + (stats?.by_severity?.[k] ?? 0), 0);
-  const cicidsTotal = SEVERITIES.reduce((s, k) => s + (cicidsStats?.by_severity?.[k] ?? 0), 0);
-  
-  let source: "ai" | "cicids" | "bots" = "ai";
-  if (aiTotal === 0) {
-    if (cicidsTotal > 0) source = "cicids";
-    else if (botsTactics && botsTactics.length > 0) source = "bots";
-  }
+  const aiTotal    = useMemo(() => SEVERITIES.reduce((s, k) => s + (stats?.by_severity?.[k] ?? 0), 0), [stats]);
+  const cicidsTotal = useMemo(() => SEVERITIES.reduce((s, k) => s + (cicidsStats?.by_severity?.[k] ?? 0), 0), [cicidsStats]);
 
-  const data = SEVERITIES
-    .map(s => {
-      let value = 0;
-      if (source === "ai") value = stats?.by_severity?.[s] ?? 0;
-      else if (source === "cicids") value = cicidsStats?.by_severity?.[s] ?? 0;
-      else if (source === "bots" && botsTactics) {
-        // Map tactics to severity for visualization
-        if (s === "CRITICAL") value = botsTactics.find(t => t.tactic === "Initial Access")?.count ?? 0;
-        if (s === "HIGH")     value = botsTactics.find(t => t.tactic === "Execution")?.count ?? 0;
-        if (s === "MEDIUM")   value = botsTactics.find(t => t.tactic === "Discovery")?.count ?? 0;
-      }
-      return { name: s, value };
-    })
-    .filter(d => d.value > 0);
+  const source = useMemo<"ai" | "cicids" | "bots">(() => {
+    if (aiTotal > 0) return "ai";
+    if (cicidsTotal > 0) return "cicids";
+    if (botsTactics && botsTactics.length > 0) return "bots";
+    return "ai";
+  }, [aiTotal, cicidsTotal, botsTactics]);
+
+  const data = useMemo(() => SEVERITIES.map(s => {
+    let value = 0;
+    if (source === "ai")    value = stats?.by_severity?.[s] ?? 0;
+    else if (source === "cicids") value = cicidsStats?.by_severity?.[s] ?? 0;
+    else if (source === "bots" && botsTactics) {
+      if (s === "CRITICAL") value = botsTactics.find(t => t.tactic === "Initial Access")?.count ?? 0;
+      if (s === "HIGH")     value = botsTactics.find(t => t.tactic === "Execution")?.count ?? 0;
+      if (s === "MEDIUM")   value = botsTactics.find(t => t.tactic === "Discovery")?.count ?? 0;
+    }
+    return { name: s, value };
+  }).filter(d => d.value > 0), [source, stats, cicidsStats, botsTactics]);
 
   const subtitle = source === "bots" ? "BOTSv3 Heuristics" : source === "cicids" ? "Network telemetry" : "AI alerts";
 
@@ -77,7 +75,7 @@ export function SeverityChart({ stats, cicidsStats, botsTactics }: Props) {
               fontSize: 11,
               color: "#c5c7d4",
             }}
-            formatter={(value: number, name: string) => [
+            formatter={(value: any, name: any) => [
               value.toLocaleString(),
               name,
             ]}

@@ -14,6 +14,9 @@ export interface Alert {
   category:            ThreatCategory;
   confidence:          number;
   source_ip:           string | null;
+  dest_ip:             string | null;
+  dest_port:           number | null;
+  chain_hash:          string | null;
   affected_asset:      string | null;
   mitre_techniques:    string[];
   raw_log_excerpt:     string;
@@ -95,9 +98,11 @@ export interface CicidsLog {
 }
 
 export interface CicidsStats {
-  total:       number;
-  by_label:    Record<string, number>;
-  by_severity: Record<string, number>;
+  total:           number;
+  by_label:        Record<string, number>;
+  by_severity:     Record<string, number>;
+  /** Full CSV row count for a pipeline session — may exceed `total` (alerts only). */
+  rows_processed?: number;
 }
 
 export interface AttackDetail {
@@ -185,7 +190,7 @@ export interface CisoPipelineSummary {
   total_alerts:        number;
   by_severity:         Record<string, number>;
   top_techniques:      { id: string; name: string; count: number }[];
-  top_attacker_ips:    { ip: string; count: number }[];
+  top_attacker_ips:    { ip: string; count: number; dominant_rule?: string }[];
   top_labels:          { label: string; count: number }[];
   analyst_hours_saved: number;
   cost_avoided_usd:    number;
@@ -203,6 +208,8 @@ export interface PipelineSession {
   chain_root_hash: string | null;
   chain_tip_hash:  string | null;
   ciso_summary:    CisoPipelineSummary | null;
+  /** Alerts awaiting STARK proof verification (CRITICAL/HIGH/MEDIUM severity). */
+  pending_proofs:  number;
 }
 
 /** Lightweight polling response from /api/sessions/{id}/status */
@@ -232,6 +239,7 @@ export interface PipelineAlert {
   ingested_at:     string;
   dataset_type:    string;
   source_ip:       string | null;
+  src_port:        number | null;
   dest_ip:         string | null;
   dest_port:       number | null;
   protocol:        string | null;
@@ -241,6 +249,9 @@ export interface PipelineAlert {
   mitre_name:      string | null;
   bytes_total:     number | null;
   chain_hash:      string | null;
+  z_score_bytes:   number | null;
+  z_score_pkts:    number | null;
+  raw_features:    string | null;
 }
 
 export type PipelineWsMessage =

@@ -222,7 +222,9 @@ export function ProofModal({ ruleId, onClose }: { ruleId: number; onClose: () =>
     staleTime: Infinity,
   });
 
-  const hasVerdict = proof && Object.keys(proof.verdict).length > 0;
+  const verdictData = proof?.verdict;
+  const isMockProof = typeof verdictData === "string" && (verdictData.includes("MOCK_DEV_RECEIPT") || verdictData.includes("DEV_MOCK_RECEIPT"));
+  const hasVerdict = proof && verdictData && (isMockProof || Object.keys(verdictData).length > 0);
 
   return (
     <div
@@ -381,15 +383,22 @@ export function ProofModal({ ruleId, onClose }: { ruleId: number; onClose: () =>
                       <div className="w-2 h-2 rounded-full" style={{ background: "#f97316" }} />
                       <div className="w-2 h-2 rounded-full" style={{ background: "#22c55e" }} />
                       <span className="ml-2 text-[9px] font-mono" style={{ color: "#4d5060" }}>
-                        risc0_zkvm::Journal → ThreatVerdict
+                        {isMockProof ? "dev_mode::Bypass" : "risc0_zkvm::Journal → ThreatVerdict"}
                       </span>
                     </div>
                     <div className="p-4">
-                      <JsonView data={proof.verdict as Record<string, unknown>} />
+                      {isMockProof ? (
+                        <div className="text-orange-400 font-bold p-3 bg-orange-900/20 rounded border border-orange-500/30">
+                          ⚠️ Mock Proof (Dev Mode)
+                          <p className="font-mono text-xs mt-2 text-orange-200/80 break-all">{String(verdictData)}</p>
+                        </div>
+                      ) : (
+                        <JsonView data={proof.verdict as Record<string, unknown>} />
+                      )}
                     </div>
 
                     {/* Full nonce display */}
-                    {proof.verdict.input_hash && (
+                    {!isMockProof && proof.verdict.input_hash && (
                       <div
                         className="px-4 py-3"
                         style={{ borderTop: "1px solid rgba(6,182,212,0.12)", background: "rgba(6,182,212,0.03)" }}

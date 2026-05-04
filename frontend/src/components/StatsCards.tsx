@@ -1,8 +1,9 @@
-import type { CisoPipelineSummary, DashboardStats } from "../lib/types";
+import type { CicidsStats, CisoPipelineSummary, DashboardStats } from "../lib/types";
 
 interface Props {
   stats:        DashboardStats | undefined;
   pipelineCiso: CisoPipelineSummary | undefined;
+  cicidsStats:  CicidsStats | undefined;
 }
 
 type Theme = "neutral" | "red" | "amber" | "green" | "cyan";
@@ -68,76 +69,54 @@ function MetricCard({
   );
 }
 
-export function StatsCards({ stats, pipelineCiso }: Props) {
-  const loading = !stats;
+export function StatsCards({ stats, pipelineCiso, cicidsStats }: Props) {
+  const loading = !stats && !cicidsStats;
 
-  const total      = stats?.total_events      ?? 0;
-  const critical   = stats?.critical_events   ?? 0;
-  const suspicious = stats?.suspicious_events ?? 0;
-  const benign     = stats?.benign_events     ?? 0;
+  // Prefer session-scoped cicidsStats (from telemetry_alerts) over legacy stats
+  // (which reads cicids_events — always 0 for pipeline sessions).
+  const sessionTotal = cicidsStats?.total ?? 0;
+  const legacyTotal  = stats?.total_events ?? 0;
+  const total        = sessionTotal > 0 ? sessionTotal : legacyTotal;
 
-  // Merge pipeline CISO values: pipeline and CIC-IDS cover different datasets,
-  // so the totals are additive.  Pipeline values dominate when they are non-zero.
-  const hours = (stats?.hours_saved    ?? 0) + (pipelineCiso?.analyst_hours_saved ?? 0);
-  const cost  = (stats?.cost_saved     ?? 0) + (pipelineCiso?.cost_avoided_usd    ?? 0);
+  // Severity breakdown: session-scoped when available, legacy otherwise.
+  const bySev    = cicidsStats?.by_severity ?? {};
+  const critical = sessionTotal > 0
+    ? (bySev.CRITICAL ?? 0)
+    : (stats?.critical_events ?? 0);
+  const suspicious = sessionTotal > 0
+    ? (bySev.HIGH ?? 0) + (bySev.MEDIUM ?? 0)
+    : (stats?.suspicious_events ?? 0);
+  const benign = sessionTotal > 0
+    ? (bySev.INFO ?? 0) + (bySev.LOW ?? 0)
+    : (stats?.benign_events ?? 0);
 
-  const pipelineFlows   = 0;  // rows_processed lives in PipelineCompletion, not ciso
-  const pipelineCrit    = pipelineCiso?.by_severity?.CRITICAL ?? 0;
-  const combinedTotal   = total + pipelineFlows;
-  const combinedCrit    = critical + pipelineCrit;
-  const combinedSusp    = suspicious + (pipelineCiso?.by_severity?.HIGH ?? 0);
-
-  const attackPct = total > 0 ? ((combinedCrit + combinedSusp) / (total || 1) * 100).toFixed(1) : "0.0";
+  const attackPct = total > 0 ? ((critical + suspicious) / total * 100).toFixed(1) : "0.0";
   const benignPct = total > 0 ? (benign / total * 100).toFixed(1) : "0.0";
-
-  const hoursSub = pipelineCiso
-    ? `${pipelineCiso.analyst_hours_saved.toFixed(1)} h pipeline + ${(stats?.hours_saved ?? 0)} h CIC-IDS`
-    : `${stats?.by_severity?.CRITICAL ?? 0} critical × 0.75 h`;
-
-  const costSub = pipelineCiso
-    ? `$${pipelineCiso.cost_avoided_usd.toLocaleString()} pipeline avoided`
-    : "@ $50/hr SOC analyst rate";
 
   return (
     <div className="px-3 py-2.5" style={{ background: "#1a1b1f", borderBottom: "1px solid #2e3038" }}>
-      <div className="grid grid-cols-5 gap-2.5">
+      <div className="grid grid-cols-3 gap-2.5">
         <MetricCard
           label="Flows Processed"
-          value={combinedTotal || total}
+          value={total}
           sub={`${benignPct}% benign · ${benign.toLocaleString()} clean`}
           theme="neutral"
           loading={loading}
         />
         <MetricCard
           label="Critical Threats"
-          value={combinedCrit}
+          value={critical}
           sub={`${attackPct}% of all traffic`}
           theme="red"
-          maxValue={combinedTotal || total || 1}
+          maxValue={total || 1}
           loading={loading}
         />
         <MetricCard
           label="Suspicious Activity"
-          value={combinedSusp}
+          value={suspicious}
           sub="HIGH + MEDIUM severity"
           theme="amber"
-          maxValue={combinedTotal || total || 1}
-          loading={loading}
-        />
-        <MetricCard
-          label="Analyst Hours Saved"
-          value={Math.round(hours)}
-          suffix=" hrs"
-          sub={hoursSub}
-          theme="green"
-          loading={loading}
-        />
-        <MetricCard
-          label="Cost Avoided"
-          value={cost}
-          prefix="$"
-          sub={costSub}
-          theme="cyan"
+          maxValue={total || 1}
           loading={loading}
         />
       </div>

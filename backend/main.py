@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).parent.parent
 MONITOR_DIR   = _PROJECT_ROOT / "data" / "monitor"
 
+# ZK Bypass Developer Mode
+DEV_MODE_ZK_BYPASS = os.getenv("DEV_MODE_ZK_BYPASS", "False").lower() == "true"
+if DEV_MODE_ZK_BYPASS:
+    logger.warning("DEV_MODE_ZK_BYPASS is ENABLED. STARK proofs will be mocked.")
+
 _scheduler = AsyncIOScheduler()
 
 

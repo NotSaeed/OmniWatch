@@ -1,8 +1,8 @@
 /**
- * Sprint 5 — Cryptographic Trust Chain DAG (Three.js / R3F)
+ * Cryptographic Trust Chain DAG (Three.js / R3F)
  *
- * A 3D Directed Acyclic Graph visualizing the dual-verification pipeline:
- *   Edge Telemetry → STARK Proof → Human FIDO2 Signature → Remediation
+ * A 3D Directed Acyclic Graph visualizing the ZK verification pipeline:
+ *   Edge Telemetry → Bincode Payload → STARK Proof → Verification Gate → Remediation
  *
  * Graceful degradation: if WebGL fails, renders a 2D CSS-grid fallback.
  */
@@ -11,6 +11,7 @@ import { useState, useEffect, useRef, useMemo, Suspense } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Html } from "@react-three/drei";
 import * as THREE from "three";
+import { motion } from "framer-motion";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -42,24 +43,24 @@ export interface TrustChainProps {
    * bound to the real SHA-256 chain_tip_hash from the completed session.
    */
   pipelineHash?: string;
+  /** When true, shows the STARK proving overlay with elapsed-seconds timer. */
+  isProving?: boolean;
 }
 
 // ── Default pipeline (zkVM proof flow — used when no pipelineHash is set) ─────
 
 export const DEFAULT_NODES: TrustNode[] = [
-  { id: "edge",    label: "Edge Telemetry",    sublabel: "Pi 4 · Zeek + ICSNPP",        state: "verified",  position: [-4, 1.5, 0] },
-  { id: "bincode", label: "Bincode Payload",   sublabel: "61-byte serialized struct",    state: "verified",  position: [-1.5, 1.5, 0] },
-  { id: "zkvm",    label: "STARK Proof",       sublabel: "RISC Zero zkVM (Machine)",     state: "verifying", position: [1.5, 1.5, 0] },
-  { id: "fido2",   label: "FIDO2 Signature",   sublabel: "ECDSA · WebAuthn (Human)",     state: "pending",   position: [1.5, -1, 0] },
-  { id: "gate",    label: "Verification Gate", sublabel: "Dual-factor: Machine + Human", state: "pending",   position: [4.5, 0.25, 0] },
-  { id: "action",  label: "Remediation",       sublabel: "Network isolation · Firewall", state: "pending",   position: [7, 0.25, 0] },
+  { id: "edge",    label: "Edge Telemetry",    sublabel: "Pi 4 · Zeek + ICSNPP",        state: "verified",  position: [-4, 0.5, 0] },
+  { id: "bincode", label: "Bincode Payload",   sublabel: "61-byte serialized struct",    state: "verified",  position: [-1.5, 0.5, 0] },
+  { id: "zkvm",    label: "STARK Proof",       sublabel: "RISC Zero zkVM (Machine)",     state: "verifying", position: [1.5, 0.5, 0] },
+  { id: "gate",    label: "Verification Gate", sublabel: "ZK Machine Verification",      state: "pending",   position: [4.5, 0.5, 0] },
+  { id: "action",  label: "Remediation",       sublabel: "Network isolation · Firewall", state: "pending",   position: [7, 0.5, 0] },
 ];
 
 const DEFAULT_EDGES: TrustEdge[] = [
   { from: "edge",    to: "bincode" },
   { from: "bincode", to: "zkvm" },
   { from: "zkvm",    to: "gate" },
-  { from: "fido2",   to: "gate" },
   { from: "gate",    to: "action" },
 ];
 
@@ -72,8 +73,9 @@ const DEFAULT_EDGES: TrustEdge[] = [
 // The "hash" node sublabel shows the first 8 hex chars of the chain_tip_hash —
 // the SHA-256 that binds every alert in the session to its source telemetry.
 
-function buildPipelineNodes(hash: string): TrustNode[] {
-  const short = hash.length >= 8 ? hash.substring(0, 8) : hash;
+function buildPipelineNodes(hash: string | undefined): TrustNode[] {
+  const validHash = typeof hash === "string" ? hash : "unknown";
+  const short = validHash.length >= 8 ? validHash.substring(0, 8) : validHash;
   return [
     {
       id:       "raw",
@@ -120,6 +122,30 @@ const STATE_COLORS: Record<NodeState, string> = {
   verified:  "#22c55e",
   failed:    "#ef4444",
 };
+
+// ── Star Field — ambient depth background ────────────────────────────────────
+
+const STAR_COUNT = 280;
+
+function StarField() {
+  const geo = useMemo(() => {
+    const g = new THREE.BufferGeometry();
+    const positions = new Float32Array(STAR_COUNT * 3);
+    for (let i = 0; i < STAR_COUNT; i++) {
+      positions[i * 3]     = (Math.random() - 0.5) * 55;
+      positions[i * 3 + 1] = (Math.random() - 0.5) * 24;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * 24 - 10; // pushed back in Z
+    }
+    g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    return g;
+  }, []);
+
+  return (
+    <points geometry={geo}>
+      <pointsMaterial size={0.035} color="#1e3a5f" transparent opacity={0.85} depthWrite={false} />
+    </points>
+  );
+}
 
 // ── Particle Burst ───────────────────────────────────────────────────────────
 // Plays a one-shot radial burst when a node transitions to "verified".
@@ -238,11 +264,19 @@ function DagNode({ node }: { node: TrustNode }) {
   return (
     <group position={[node.position[0], node.position[1], node.position[2]]}>
       <ParticleBurst active={burst} color={STATE_COLORS[node.state]} />
-      {/* Glow */}
+      {/* Outer ambient glow sphere */}
       <mesh ref={glowRef}>
-        <sphereGeometry args={[0.55, 16, 16]} />
-        <meshBasicMaterial color={color} transparent opacity={0.12} depthWrite={false} />
+        <sphereGeometry args={[0.62, 16, 16]} />
+        <meshBasicMaterial color={color} transparent opacity={0.10} depthWrite={false} />
       </mesh>
+
+      {/* Inner tight glow — extra brightness on verified */}
+      {node.state === "verified" && (
+        <mesh>
+          <sphereGeometry args={[0.40, 12, 12]} />
+          <meshBasicMaterial color={color} transparent opacity={0.22} depthWrite={false} />
+        </mesh>
+      )}
 
       {/* Main node */}
       <mesh ref={meshRef}>
@@ -251,12 +285,12 @@ function DagNode({ node }: { node: TrustNode }) {
           color={color}
           emissive={color}
           emissiveIntensity={
-            node.state === "pending"   ? 0.08 :
-            node.state === "verifying" ? 0.55 :
-            node.state === "verified"  ? 0.80 : 0.50
+            node.state === "pending"   ? 0.06 :
+            node.state === "verifying" ? 0.70 :
+            node.state === "verified"  ? 1.10 : 0.55
           }
-          metalness={0.85}
-          roughness={0.15}
+          metalness={0.90}
+          roughness={0.10}
           wireframe={node.state === "pending"}
         />
       </mesh>
@@ -301,6 +335,33 @@ function DagEdge({ from, to, verified }: { from: [number, number, number]; to: [
   return <primitive object={lineObj} />;
 }
 
+// ── Dynamic scene light — shifts hue as verification progresses ───────────────
+
+function DynamicLight({ nodes }: { nodes: TrustNode[] }) {
+  const lightRef = useRef<THREE.PointLight>(null!);
+  const verifiedCount = nodes.filter(n => n.state === "verified").length;
+  const hasVerifying  = nodes.some(n => n.state === "verifying");
+  const hasFailed     = nodes.some(n => n.state === "failed");
+
+  // Target color: red on failure, cyan while verifying, green when all verified
+  const targetColor = hasFailed
+    ? new THREE.Color("#ef4444")
+    : hasVerifying
+    ? new THREE.Color("#06b6d4")
+    : verifiedCount === nodes.length
+    ? new THREE.Color("#22c55e")
+    : new THREE.Color("#8b5cf6");
+
+  useFrame(({ clock }) => {
+    if (!lightRef.current) return;
+    lightRef.current.color.lerp(targetColor, 0.04);
+    const t = clock.getElapsedTime();
+    lightRef.current.intensity = 0.6 + Math.sin(t * 1.4) * 0.25;
+  });
+
+  return <pointLight ref={lightRef} position={[0, 4, 4]} intensity={0.6} color="#8b5cf6" />;
+}
+
 // ── Scene ────────────────────────────────────────────────────────────────────
 
 function TrustChainScene({ nodes, edges }: { nodes: TrustNode[]; edges: TrustEdge[] }) {
@@ -312,9 +373,12 @@ function TrustChainScene({ nodes, edges }: { nodes: TrustNode[]; edges: TrustEdg
 
   return (
     <>
-      <ambientLight intensity={0.35} />
-      <pointLight position={[5, 5, 5]} intensity={0.8} />
-      <pointLight position={[-5, -3, 3]} intensity={0.4} color="#06b6d4" />
+      <StarField />
+      <ambientLight intensity={0.25} />
+      <pointLight position={[5, 5, 5]} intensity={0.9} />
+      <pointLight position={[-5, -3, 3]} intensity={0.5} color="#06b6d4" />
+      <pointLight position={[0, -5, 2]} intensity={0.20} color="#8b5cf6" />
+      <DynamicLight nodes={nodes} />
 
       {edges.map(e => {
         const fn = nodeMap.get(e.from);
@@ -326,13 +390,15 @@ function TrustChainScene({ nodes, edges }: { nodes: TrustNode[]; edges: TrustEdg
       {nodes.map(n => <DagNode key={n.id} node={n} />)}
 
       <OrbitControls
+        enableDamping
+        dampingFactor={0.07}
         enablePan
         enableZoom
         enableRotate
         maxDistance={18}
         minDistance={4}
         autoRotate
-        autoRotateSpeed={0.3}
+        autoRotateSpeed={0.5}
       />
     </>
   );
@@ -341,37 +407,61 @@ function TrustChainScene({ nodes, edges }: { nodes: TrustNode[]; edges: TrustEdg
 // ── 2D Fallback ──────────────────────────────────────────────────────────────
 
 function TrustChainFallback2D({ nodes }: { nodes: TrustNode[] }) {
+  const container = {
+    hidden: {},
+    show:   { transition: { staggerChildren: 0.07 } },
+  };
+  const item = {
+    hidden: { opacity: 0, y: 10 },
+    show:   { opacity: 1, y: 0, transition: { duration: 0.22, ease: [0.22, 1, 0.36, 1] } },
+  };
+
   return (
     <div className="p-4">
       <div className="flex items-center gap-2 mb-3">
         <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
         <span className="text-[10px] text-amber-500/80">WebGL unavailable — 2D fallback</span>
       </div>
-      <div className="grid grid-cols-6 gap-3">
+      <motion.div
+        className="grid gap-3"
+        style={{ gridTemplateColumns: `repeat(${Math.min(nodes.length, 6)}, minmax(0, 1fr))` }}
+        variants={container}
+        initial="hidden"
+        animate="show"
+      >
         {nodes.map(node => (
-          <div
+          <motion.div
             key={node.id}
-            className="rounded-lg p-3 transition-all"
+            variants={item}
+            className="rounded-lg p-3"
             style={{
-              background: node.state === "verified" ? "rgba(34,197,94,0.08)"
+              background: node.state === "verified"  ? "rgba(34,197,94,0.08)"
                 : node.state === "verifying" ? "rgba(6,182,212,0.08)"
-                : node.state === "failed" ? "rgba(239,68,68,0.08)"
+                : node.state === "failed"    ? "rgba(239,68,68,0.08)"
                 : "rgba(255,255,255,0.03)",
               border: `1px solid ${STATE_COLORS[node.state]}40`,
+              transition: "background 0.3s, border-color 0.3s",
             }}
           >
             <div className="flex items-center gap-2 mb-1">
-              <span className="w-2 h-2 rounded-full" style={{
-                background: STATE_COLORS[node.state],
-                boxShadow: node.state !== "pending" ? `0 0 8px ${STATE_COLORS[node.state]}60` : "none",
-              }} />
+              <motion.span
+                className="w-2 h-2 rounded-full shrink-0"
+                animate={node.state === "verifying"
+                  ? { scale: [1, 1.35, 1], opacity: [1, 0.6, 1] }
+                  : { scale: 1, opacity: 1 }}
+                transition={node.state === "verifying" ? { repeat: Infinity, duration: 1 } : {}}
+                style={{
+                  background: STATE_COLORS[node.state],
+                  boxShadow: node.state !== "pending" ? `0 0 8px ${STATE_COLORS[node.state]}70` : "none",
+                }}
+              />
               <span className="text-[9px] font-mono uppercase" style={{ color: STATE_COLORS[node.state] }}>{node.state}</span>
             </div>
             <p className="text-xs font-semibold text-white/90">{node.label}</p>
             <p className="text-[10px] mt-0.5" style={{ color: "#6b6e80" }}>{node.sublabel}</p>
-          </div>
+          </motion.div>
         ))}
-      </div>
+      </motion.div>
     </div>
   );
 }
@@ -382,6 +472,7 @@ export function TrustChainDAG({
   nodes = DEFAULT_NODES,
   edges = DEFAULT_EDGES,
   pipelineHash,
+  isProving = false,
 }: TrustChainProps) {
   // When a completed pipeline session hash is available, switch to pipeline
   // mode: override nodes/edges with the real processing chain.
@@ -389,6 +480,14 @@ export function TrustChainDAG({
   const activeEdges = pipelineHash ? PIPELINE_EDGES                   : edges;
   const [webglOk, setWebglOk] = useState(true);
   const [errored, setErrored] = useState(false);
+
+  // Live elapsed timer for the STARK proving window
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!isProving) { setElapsed(0); return; }
+    const t = setInterval(() => setElapsed(s => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [isProving]);
 
   useEffect(() => {
     try {
@@ -428,9 +527,9 @@ export function TrustChainDAG({
       </div>
 
       {/* Canvas with bloom-sim filter */}
-      <div style={{ position: "absolute", inset: 0, filter: "brightness(1.08) saturate(1.18) contrast(1.04)" }}>
+      <div style={{ position: "absolute", inset: 0, filter: "brightness(1.12) saturate(1.28) contrast(1.05) drop-shadow(0 0 18px rgba(139,92,246,0.18))" }}>
         <Canvas
-          camera={{ position: [1.5, 1, 9], fov: 50 }}
+          camera={{ position: [2, 2.5, 10], fov: 46 }}
           gl={{ antialias: true, alpha: true }}
           style={{ background: "#0a0a0d" }}
           onError={() => setErrored(true)}
@@ -486,6 +585,27 @@ export function TrustChainDAG({
           Drag to rotate · Scroll to zoom
         </span>
       </div>
+
+      {/* STARK proving overlay — shown while /api/pipeline/prove is in-flight */}
+      {isProving && (
+        <div
+          className="absolute bottom-0 left-0 right-0 z-20 flex items-center justify-center gap-3
+                     px-4 py-2.5 border-t border-cyan-500/20"
+          style={{ background: "rgba(2,8,23,0.88)", backdropFilter: "blur(8px)" }}
+        >
+          {/* Pulsing ring */}
+          <span
+            className="proving-pulse w-2.5 h-2.5 rounded-full shrink-0"
+            style={{ background: "#06b6d4", boxShadow: "0 0 6px #06b6d4" }}
+          />
+          <span className="text-xs font-mono text-cyan-400 tabular-nums">
+            ⚡ Generating zk-STARK proof… (~15–32 s)
+          </span>
+          <span className="text-xs font-mono text-slate-600 tabular-nums ml-1">
+            {elapsed}s
+          </span>
+        </div>
+      )}
     </div>
   );
 }

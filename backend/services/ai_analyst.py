@@ -144,9 +144,9 @@ def _fallback_report(event: dict) -> str:
     """Deterministic local report — called when Ollama is unreachable."""
     label    = event.get("label") or "Anomalous Network Activity"
     severity = event.get("severity") or "HIGH"
-    src      = event.get("src_ip") or "Unknown-Source"
-    dst      = event.get("dst_ip") or "Internal Asset"
-    port     = event.get("dst_port") or "N/A"
+    src      = event.get("src_ip") or event.get("source_ip") or "Unknown"
+    dst      = event.get("dst_ip") or event.get("dest_ip")   or "Unknown"
+    port     = event.get("dst_port") or event.get("dest_port") or "N/A"
     proto    = event.get("protocol") or "TCP"
 
     try:
